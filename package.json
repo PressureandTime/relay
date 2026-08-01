@@ -1,0 +1,57 @@
+{
+  "name": "relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local webhook delivery platform for synthetic events",
+  "workspaces": [
+    "apps/dashboard",
+    "tests/e2e"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @relay/dashboard",
+    "lint": "npm run lint --workspace @relay/dashboard",
+    "typecheck": "npm run typecheck --workspace @relay/dashboard",
+    "test": "npm run test --workspace @relay/dashboard",
+    "test:e2e": "npm run test --workspace @relay/e2e"
+  },
+  "engines": {
+    "node": ">=24 <25",
+    "npm": ">=11 <12"
+  },
+  "overrides": {
+    "postcss": "8.5.6",
+    "sharp": "0.35.3",
+    "esbuild": "0.25.0",
+    "@next/env": "https://registry.npmjs.org/@next/env/-/env-16.2.12.tgz",
+    "@next/eslint-plugin-next": "https://registry.npmjs.org/@next/eslint-plugin-next/-/eslint-plugin-next-16.2.12.tgz",
+    "@next/swc-darwin-arm64": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-16.2.12.tgz",
+    "@next/swc-darwin-x64": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-16.2.12.tgz",
+    "@next/swc-linux-arm64-gnu": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-16.2.12.tgz",
+    "@next/swc-linux-arm64-musl": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-16.2.12.tgz",
+    "@next/swc-linux-x64-gnu": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-16.2.12.tgz",
+    "@next/swc-linux-x64-musl": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-16.2.12.tgz",
+    "@next/swc-win32-arm64-msvc": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-16.2.12.tgz",
+    "@next/swc-win32-x64-msvc": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-16.2.12.tgz",
+    "@vitest/expect": "https://registry.npmjs.org/@vitest/expect/-/expect-4.1.0.tgz",
+    "@vitest/mocker": "https://registry.npmjs.org/@vitest/mocker/-/mocker-4.1.0.tgz",
+    "@vitest/pretty-format": "https://registry.npmjs.org/@vitest/pretty-format/-/pretty-format-4.1.0.tgz",
+    "@vitest/runner": "https://registry.npmjs.org/@vitest/runner/-/runner-4.1.0.tgz",
+    "@vitest/snapshot": "https://registry.npmjs.org/@vitest/snapshot/-/snapshot-4.1.0.tgz",
+    "@vitest/spy": "https://registry.npmjs.org/@vitest/spy/-/spy-4.1.0.tgz",
+    "@vitest/utils": "https://registry.npmjs.org/@vitest/utils/-/utils-4.1.0.tgz",
+    "@eslint/eslintrc": "3.3.1",
+    "es-object-atoms": "1.1.1",
+    "hasown": "2.0.2",
+    "js-yaml": {
+      ".": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.0.tgz",
+      "semver": "https://registry.npmjs.org/semver/-/semver-7.8.4.tgz"
+    },
+    "minimatch@3.1.5": {
+      "brace-expansion": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-1.1.17.tgz"
+    },
+    "minimatch@10.2.4": {
+      "brace-expansion": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.8.tgz"
+    }
+  },
+  "packageManager": "npm@11.6.2"
+}

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Relay.Api\Relay.Api.csproj">
+      <Aliases>RelayApi</Aliases>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\Relay.Core\Relay.Core.csproj" />
+    <ProjectReference Include="..\..\src\Relay.Infrastructure\Relay.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Relay.Worker\Relay.Worker.csproj">
+      <Aliases>RelayWorker</Aliases>
+    </ProjectReference>
+    <ProjectReference Include="..\..\tools\Relay.ReceiverSimulator\Relay.ReceiverSimulator.csproj">
+      <Aliases>RelayReceiver</Aliases>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

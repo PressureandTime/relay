@@ -1,0 +1,15 @@
+.git
+.github
+.tooling
+**/bin
+**/obj
+**/node_modules
+**/.next
+**/coverage
+**/TestResults
+playwright-report
+test-results
+.env*
+*.key
+*.pem
+.DS_Store

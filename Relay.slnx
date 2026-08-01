@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Relay.Api/Relay.Api.csproj" />
+    <Project Path="src/Relay.Core/Relay.Core.csproj" />
+    <Project Path="src/Relay.Infrastructure/Relay.Infrastructure.csproj" />
+    <Project Path="src/Relay.Worker/Relay.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Relay.IntegrationTests/Relay.IntegrationTests.csproj" />
+    <Project Path="tests/Relay.UnitTests/Relay.UnitTests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Relay.ReceiverSimulator/Relay.ReceiverSimulator.csproj" />
+  </Folder>
+</Solution>

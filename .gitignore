@@ -1,0 +1,44 @@
+# Environment and secrets
+.env*
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+data-protection-keys/
+
+# Project-local tools
+.tooling/
+
+# .NET
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+
+# Node and Next.js
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+
+# Playwright
+.playwright-cli/
+playwright-report/
+test-results/
+blob-report/
+
+# Local semantic-search caches
+.fastembed_cache/
+
+# Local runtime data
+.relay-data/
+*.local
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

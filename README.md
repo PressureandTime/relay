@@ -1,0 +1,107 @@
+# Relay
+
+Relay is a webhook delivery service that accepts events, signs outbound requests with HMAC-SHA256, delivers them with automatic retries, and records every attempt. A Next.js dashboard shows live delivery state, attempt history, and replay controls.
+
+The system runs locally through Docker Compose: an ASP.NET Core API, a .NET background worker, a synthetic receiver, PostgreSQL, and the dashboard.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Browser --> Dashboard["Next.js dashboard"]
+    Dashboard -->|proxy| API["ASP.NET Core API"]
+    Dashboard -->|receiver control| Receiver["Synthetic receiver"]
+    API -->|events · deliveries| Postgres[(PostgreSQL)]
+    Worker[".NET worker"] -->|claim · retry · recover| Postgres
+    Worker -->|HMAC-signed POST| Receiver
+    Receiver -->|configurable response| Worker
+```
+
+Only the dashboard is published to the host at `127.0.0.1:3000`. The API, worker, receiver, and PostgreSQL communicate over the Compose network.
+
+## Delivery flow
+
+1. Register a webhook endpoint with a target URL and signing secret.
+2. Submit an event with a JSON payload and idempotency key.
+3. The API creates the event and a queued delivery in one transaction.
+4. The worker claims the delivery, signs the envelope, and sends an HTTP POST.
+5. On a retryable failure (HTTP 408, 429, 5xx, timeout, transport error), the worker schedules the next attempt with exponential backoff: 1 s, 2 s, 4 s — up to four total attempts.
+6. On a non-retryable failure or after exhausting attempts, the delivery is terminal.
+7. A failed delivery can be replayed manually. The replay creates a new delivery with a fresh envelope, hash, and correlation ID while preserving the event and payload.
+
+## Signing contract
+
+The worker signs each request with `HMAC-SHA256(secret, "v1\n{unix-seconds}\n{delivery-id}\n{body}")` and sends the result as `X-Relay-Signature: v1={base64}`. Request headers include `X-Relay-Event-Id`, `X-Relay-Delivery-Id`, `X-Relay-Timestamp`, and `X-Correlation-Id`.
+
+The receiver validates the timestamp within a five-minute window and compares signatures in constant time. A reused delivery identifier with the same body is acknowledged; a changed body is rejected with 409.
+
+## Run locally
+
+Prerequisite: Docker with Docker Compose.
+
+```sh
+docker compose up --build --wait --wait-timeout 180
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The `migrate` container exits with code 0 after applying EF Core migrations.
+
+```sh
+docker compose ps --all    # check service state
+docker compose down        # stop, preserve volumes
+docker compose down -v     # stop, remove volumes
+```
+
+## Development
+
+Requires Node.js 24, npm 11, .NET SDK 10, and Docker.
+
+```sh
+# Frontend
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+
+# Backend
+dotnet restore Relay.slnx --locked-mode
+dotnet build Relay.slnx -c Release --no-restore
+dotnet test tests/Relay.UnitTests -c Release --no-build
+dotnet test tests/Relay.IntegrationTests -c Release --no-build
+
+# End-to-end (requires running Compose stack)
+npx playwright install --with-deps chromium
+docker compose up --build --wait --wait-timeout 180
+npm run test:e2e
+```
+
+Integration tests start a disposable PostgreSQL container through Testcontainers. Playwright tests complete delivery workflows, verify retry behavior, test replay, and confirm persistence after reload.
+
+## Security boundary
+
+- Endpoint URLs must match the configured receiver origin and `/webhooks/{UUID}` path.
+- Stored signing keys are protected with ASP.NET Core Data Protection; API and worker share an uncommitted key-ring volume.
+- Correlation IDs and delivery metadata are logged as structured data without payloads, signatures, or keys.
+- Relay has no authentication and must remain on an isolated local network.
+
+## Limitations
+
+- Receiver state is in-memory and resets when the container restarts.
+- No delivery filtering, pagination, or retention policy.
+- No endpoint disable/reactivate controls.
+- No arbitrary webhook destinations, authentication, multitenancy, billing, or cloud deployment.
+
+## Repository layout
+
+| Directory | Purpose |
+|-----------|---------|
+| `apps/dashboard` | Next.js dashboard and Vitest tests |
+| `src/Relay.Api` | Event, endpoint, delivery, and replay HTTP API |
+| `src/Relay.Core` | Domain entities, state machine, retry policy, signing |
+| `src/Relay.Infrastructure` | EF Core persistence and migrations |
+| `src/Relay.Worker` | Claim loop, delivery, retry scheduling, stale-claim recovery |
+| `tools/Relay.ReceiverSimulator` | Configurable synthetic receiver |
+| `tests/Relay.UnitTests` | Domain and signing unit tests |
+| `tests/Relay.IntegrationTests` | API, worker, receiver, and PostgreSQL tests |
+| `tests/e2e` | Playwright delivery workflows |
+| `docs/` | [Status](docs/STATUS.md), [decisions](docs/DECISIONS.md), [roadmap](docs/ROADMAP.md) |

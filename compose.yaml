@@ -1,0 +1,117 @@
+name: relay
+
+services:
+  postgres:
+    image: postgres:18.4-trixie
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_INITDB_ARGS: --auth-host=trust --auth-local=trust
+      POSTGRES_USER: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username postgres --dbname relay"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - relay_postgres:/var/lib/postgresql
+
+  migrate:
+    build:
+      context: .
+      dockerfile: src/Relay.Api/Dockerfile
+    command: ["--migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Relay: Host=postgres;Port=5432;Database=relay;Username=postgres;Include Error Detail=false
+      Relay__DataProtectionKeyPath: /var/relay/keys
+    restart: "no"
+    volumes:
+      - relay_keys:/var/relay/keys
+
+  api:
+    build:
+      context: .
+      dockerfile: src/Relay.Api/Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Relay: Host=postgres;Port=5432;Database=relay;Username=postgres;Include Error Detail=false
+      Relay__DataProtectionKeyPath: /var/relay/keys
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - relay_keys:/var/relay/keys
+
+  receiver:
+    build:
+      context: .
+      dockerfile: tools/Relay.ReceiverSimulator/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      dockerfile: src/Relay.Worker/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+      receiver:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Relay: Host=postgres;Port=5432;Database=relay;Username=postgres;Include Error Detail=false
+      Relay__DataProtectionKeyPath: /var/relay/keys
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - relay_keys:/var/relay/keys
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+      receiver:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    environment:
+      RELAY_API_BASE_URL: http://api:8080
+      RELAY_RECEIVER_BASE_URL: http://receiver:8080
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:3000:3000"
+
+volumes:
+  relay_keys:
+  relay_postgres:

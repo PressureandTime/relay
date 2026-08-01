@@ -1,0 +1,36 @@
+{
+  "name": "@relay/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@next/env": "https://registry.npmjs.org/@next/env/-/env-16.2.12.tgz",
+    "next": "https://registry.npmjs.org/next/-/next-16.2.12.tgz",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.2",
+    "@next/eslint-plugin-next": "https://registry.npmjs.org/@next/eslint-plugin-next/-/eslint-plugin-next-16.2.12.tgz",
+    "@types/node": "24.10.13",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.2",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "16.4.0",
+    "js-yaml": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.0.tgz",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.56.1",
+    "vite": "https://registry.npmjs.org/vite/-/vite-7.3.5.tgz",
+    "vitest": "https://registry.npmjs.org/vitest/-/vitest-4.1.0.tgz"
+  }
+}
