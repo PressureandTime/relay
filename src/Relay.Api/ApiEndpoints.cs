@@ -37,6 +37,12 @@ public static class ApiEndpoints
         api.MapGet("/deliveries", GetDeliveriesAsync)
             .WithName("GetDeliveries")
             .Produces<IReadOnlyList<DeliverySummaryResponse>>();
+        api.MapPost("/deliveries/{deliveryId:guid}/replays", ReplayDeliveryAsync)
+            .WithName("ReplayDelivery")
+            .Produces<ReplayAcceptedResponse>(StatusCodes.Status202Accepted)
+            .ProducesValidationProblem()
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict);
 
         return endpoints;
     }
@@ -286,6 +292,158 @@ public static class ApiEndpoints
             .ToListAsync(cancellationToken);
 
         return Results.Ok(deliveries);
+    }
+
+    private static async Task<IResult> ReplayDeliveryAsync(
+        Guid deliveryId,
+        HttpContext context,
+        RelayDbContext database,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var idempotencyKey = GetIdempotencyKeyFromHeaders(context.Request.Headers);
+        if (idempotencyKey is null)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["idempotencyKey"] = ["Exactly one Idempotency-Key header is required."],
+            });
+        }
+
+        var originalDelivery = await database.Deliveries
+            .AsNoTracking()
+            .SingleOrDefaultAsync(candidate => candidate.Id == deliveryId, cancellationToken);
+
+        if (originalDelivery is null)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status404NotFound,
+                title: "Delivery not found.",
+                extensions: ProblemExtensions(context));
+        }
+
+        if (originalDelivery.State != DeliveryState.Failed)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status409Conflict,
+                title: "Only failed deliveries can be replayed.",
+                detail: $"Delivery {deliveryId} is in state {originalDelivery.State}.",
+                extensions: ProblemExtensions(context));
+        }
+
+        var existingReplay = await FindReplayAsync(
+            database,
+            deliveryId,
+            idempotencyKey,
+            cancellationToken);
+
+        if (existingReplay is not null)
+        {
+            return BuildReplayResult(context, deliveryId, existingReplay, replayed: true);
+        }
+
+        var originalEvent = await database.WebhookEvents
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == originalDelivery.EventId, cancellationToken);
+
+        var createdAtUtc = timeProvider.GetUtcNow();
+        var newEventId = originalEvent.Id;
+        var newDeliveryId = Guid.CreateVersion7();
+        var correlationId = CorrelationIdMiddleware.GetCorrelationId(context);
+        using var payloadDocument = JsonDocument.Parse(originalEvent.PayloadJson);
+        var envelopeJson = JsonSerializer.Serialize(
+            new DeliveryEnvelope(
+                newEventId,
+                newDeliveryId,
+                originalEvent.EventType,
+                createdAtUtc,
+                payloadDocument.RootElement),
+            SerializerOptions);
+
+        var replayDelivery = new Delivery(
+            newDeliveryId,
+            newEventId,
+            originalDelivery.EndpointId,
+            envelopeJson,
+            ComputeSha256(envelopeJson),
+            correlationId,
+            deliveryId,
+            idempotencyKey,
+            createdAtUtc);
+
+        database.Deliveries.Add(replayDelivery);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException)
+        {
+            database.ChangeTracker.Clear();
+            var winner = await FindReplayAsync(
+                database,
+                deliveryId,
+                idempotencyKey,
+                cancellationToken);
+            if (winner is null)
+            {
+                throw;
+            }
+
+            return BuildReplayResult(context, deliveryId, winner, replayed: true);
+        }
+
+        return BuildReplayResult(context, deliveryId, replayDelivery, replayed: false);
+    }
+
+    private static async Task<Delivery?> FindReplayAsync(
+        RelayDbContext database,
+        Guid originalDeliveryId,
+        string idempotencyKey,
+        CancellationToken cancellationToken) =>
+        await database.Deliveries
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                candidate => candidate.ReplayOfDeliveryId == originalDeliveryId
+                    && candidate.ReplayIdempotencyKey == idempotencyKey,
+                cancellationToken);
+
+    private static IResult BuildReplayResult(
+        HttpContext context,
+        Guid originalDeliveryId,
+        Delivery replay,
+        bool replayed)
+    {
+        if (replayed)
+        {
+            context.Response.Headers[IdempotencyReplayedHeader] = "true";
+        }
+
+        return Results.Accepted(
+            $"/api/deliveries/{replay.Id}",
+            new ReplayAcceptedResponse(
+                originalDeliveryId,
+                replay.Id,
+                replay.State,
+                replay.CorrelationId));
+    }
+
+    private static string? GetIdempotencyKeyFromHeaders(IHeaderDictionary headers)
+    {
+        if (!headers.TryGetValue(IdempotencyKeyHeader, out var values) || values.Count is not 1)
+        {
+            return null;
+        }
+
+        var key = values[0]?.Trim() ?? string.Empty;
+        if (key.Length is 0 or > RelayLimits.IdempotencyKeyLength
+            || !key.All(character =>
+                char.IsAsciiLetterOrDigit(character)
+                || character is '-' or '_' or '.' or ':'))
+        {
+            return null;
+        }
+
+        return key;
     }
 
     private static Dictionary<string, string[]> ValidateEndpoint(

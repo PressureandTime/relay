@@ -68,9 +68,11 @@ public sealed class ReceiverRegistry
 
 public sealed class SyntheticReceiver
 {
+    private const int OriginalFailureCountBeforeReplay = 4;
     private readonly object _gate = new();
     private readonly List<StoredReceipt> _orderedReceipts = [];
     private readonly Dictionary<Guid, StoredReceipt> _receiptsByDeliveryId = [];
+    private readonly Dictionary<Guid, Guid> _originalDeliveryIdsByEventId = [];
     private readonly byte[] _signingSecret;
 
     internal SyntheticReceiver(string behavior, byte[] signingSecret)
@@ -81,13 +83,16 @@ public sealed class SyntheticReceiver
 
     public string Behavior { get; }
 
-    private int GetStatusCodeForAttempt(int receiveCount)
+    private int GetStatusCodeForAttempt(int receiveCount, bool isReplay)
     {
-        if (Behavior == "success") return 204;
-        if (Behavior == "alwaysFail") return 500;
-        if (Behavior == "retryThenSucceed") return receiveCount >= 3 ? 204 : 503;
-        if (Behavior == "failUntilReplay") return receiveCount >= 5 ? 204 : 503;
-        return 500; // fallback if unknown behavior
+        return Behavior switch
+        {
+            "success" => 204,
+            "alwaysFail" => 500,
+            "retryThenSucceed" => receiveCount >= 3 ? 204 : 503,
+            "failUntilReplay" => isReplay ? 204 : 503,
+            _ => 500,
+        };
     }
 
     public bool HasValidSignature(
@@ -147,6 +152,8 @@ public sealed class SyntheticReceiver
     {
         lock (_gate)
         {
+            var isReplay = IsReplay(eventId, deliveryId);
+
             if (_receiptsByDeliveryId.TryGetValue(deliveryId, out var existingReceipt))
             {
                 if (!CryptographicOperations.FixedTimeEquals(
@@ -157,7 +164,7 @@ public sealed class SyntheticReceiver
                 }
 
                 existingReceipt.IncrementReceiveCount();
-                var statusCode = GetStatusCodeForAttempt(existingReceipt.ReceiveCount);
+                var statusCode = GetStatusCodeForAttempt(existingReceipt.ReceiveCount, isReplay);
                 if (existingReceipt.StatusCode != 204)
                 {
                     existingReceipt.StatusCode = statusCode;
@@ -166,14 +173,14 @@ public sealed class SyntheticReceiver
                 {
                     statusCode = 204;
                 }
-                
+
                 return new ReceiverApplicationResult(
                     IsConflict: false,
                     IsDuplicate: true,
                     StatusCode: statusCode);
             }
 
-            var initialStatusCode = GetStatusCodeForAttempt(1);
+            var initialStatusCode = GetStatusCodeForAttempt(1, isReplay);
             var receipt = new StoredReceipt(
                 eventId,
                 deliveryId,
@@ -189,6 +196,19 @@ public sealed class SyntheticReceiver
                 IsDuplicate: false,
                 StatusCode: initialStatusCode);
         }
+    }
+
+    private bool IsReplay(Guid eventId, Guid deliveryId)
+    {
+        if (!_originalDeliveryIdsByEventId.TryGetValue(eventId, out var originalDeliveryId))
+        {
+            _originalDeliveryIdsByEventId.Add(eventId, deliveryId);
+            return false;
+        }
+
+        return originalDeliveryId != deliveryId
+            && _receiptsByDeliveryId.TryGetValue(originalDeliveryId, out var originalReceipt)
+            && originalReceipt.ReceiveCount >= OriginalFailureCountBeforeReplay;
     }
 
     private static bool TryDecodeSignature(string signature, out byte[] decodedSignature)

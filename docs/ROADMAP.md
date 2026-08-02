@@ -5,12 +5,11 @@
 - Endpoint registration with URL allowlist and signing-key protection.
 - Idempotent event creation with transactional delivery queuing.
 - HMAC-signed asynchronous delivery through a background worker.
-- Automatic retries with exponential backoff and stale-claim recovery.
+- Automatic retries with 1 s, 2 s, and 4 s exponential backoff and stale-claim recovery.
 - Idempotent manual replay for failed deliveries.
 - Configurable receiver simulator (success, retry-then-succeed, fail-until-replay, always-fail).
-- Operations dashboard with live polling, retry and replay controls.
-- xUnit, Testcontainers, Vitest, and Playwright test coverage.
-- Private GitHub Actions CI.
+- Operations dashboard with live polling and replay controls.
+- xUnit unit tests, Testcontainers integration tests, Vitest, and Playwright workflows for success, retry, and replay.
 
 ## Next candidates
 
@@ -19,6 +18,7 @@
 - Pagination and cursor-based history navigation.
 - Delivery retention policy and scheduled cleanup.
 - Dashboard dark mode.
+- Additional browser coverage for validation and concurrent idempotency scenarios.
 
 ## Not planned
 

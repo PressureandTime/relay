@@ -169,7 +169,7 @@ public sealed class DeliveryStateTests
     }
 
     [Fact]
-    public void RecoverStaleClaimClearsClaimFields()
+    public void RecoverStaleClaimSchedulesImmediateRetryAndClearsClaimFields()
     {
         var delivery = CreateDelivery();
         delivery.Claim(Guid.NewGuid(), CreatedAtUtc.AddSeconds(1));
@@ -180,6 +180,8 @@ public sealed class DeliveryStateTests
         Assert.Null(delivery.ClaimToken);
         Assert.Null(delivery.ClaimedAtUtc);
         Assert.Null(delivery.ClaimExpiresAtUtc);
+        Assert.Equal(DeliveryState.RetryScheduled, delivery.State);
+        Assert.Equal(recoveryTime, delivery.NextAttemptAtUtc);
     }
 
     [Fact]

@@ -44,11 +44,11 @@ public sealed partial class DeliveryProcessor(
         var startedTimestamp = Stopwatch.GetTimestamp();
         var outcome = await SendAsync(workItem, stoppingToken);
         var duration = Stopwatch.GetElapsedTime(startedTimestamp);
-        await CompleteAsync(workItem, outcome, duration, stoppingToken);
+        var finalState = await CompleteAsync(workItem, outcome, duration, stoppingToken);
         LogCompleted(
             logger,
             workItem.DeliveryId,
-            outcome.Succeeded ? DeliveryState.Succeeded : DeliveryState.Failed,
+            finalState,
             outcome.HttpStatusCode,
             (long)duration.TotalMilliseconds);
         return true;
@@ -170,17 +170,43 @@ public sealed partial class DeliveryProcessor(
         }
     }
 
-    private async Task CompleteAsync(
+    private async Task<DeliveryState> CompleteAsync(
         DeliveryWorkItem workItem,
         DeliveryOutcome outcome,
         TimeSpan duration,
         CancellationToken cancellationToken)
     {
         database.ChangeTracker.Clear();
+        await using var transaction = await database.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+
         var delivery = await database.Deliveries
-            .SingleAsync(candidate => candidate.Id == workItem.DeliveryId, cancellationToken);
+            .FromSqlRaw(
+                """
+                SELECT *
+                FROM deliveries
+                WHERE "Id" = {0}
+                FOR UPDATE
+                """,
+                workItem.DeliveryId)
+            .SingleAsync(cancellationToken);
+
         var attempt = await database.DeliveryAttempts
             .SingleAsync(candidate => candidate.Id == workItem.AttemptId, cancellationToken);
+
+        if (delivery.State != DeliveryState.Processing || delivery.ClaimToken != workItem.ClaimToken)
+        {
+            LogStaleCompletion(
+                logger,
+                workItem.DeliveryId,
+                delivery.State,
+                workItem.ClaimToken,
+                delivery.ClaimToken);
+            await transaction.CommitAsync(cancellationToken);
+            return delivery.State;
+        }
+
         var completedAtUtc = timeProvider.GetUtcNow();
         var durationMilliseconds = Math.Max(0, (long)duration.TotalMilliseconds);
 
@@ -217,6 +243,8 @@ public sealed partial class DeliveryProcessor(
         }
 
         await database.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return delivery.State;
     }
 
     private async Task<bool> TryRecoverStaleClaimAsync(CancellationToken cancellationToken)
@@ -259,10 +287,10 @@ public sealed partial class DeliveryProcessor(
         }
 
         var claimToken = delivery.ClaimToken ?? Guid.Empty;
-        
+
         if (delivery.AttemptCount < RelayLimits.MaxDeliveryAttempts)
         {
-            delivery.ScheduleRetry(now);
+            delivery.RecoverStaleClaim(now);
         }
         else
         {
@@ -272,7 +300,6 @@ public sealed partial class DeliveryProcessor(
                 "The delivery claim expired before completion.",
                 now);
         }
-        
 
         await database.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -308,6 +335,17 @@ public sealed partial class DeliveryProcessor(
         Level = LogLevel.Warning,
         Message = "Signing secret was unavailable for delivery {DeliveryId}")]
     private static partial void LogSecretUnavailable(ILogger logger, Guid deliveryId);
+
+    [LoggerMessage(
+        EventId = 1103,
+        Level = LogLevel.Warning,
+        Message = "Delivery {DeliveryId} was modified by another process before completion. State: {DeliveryState}, Expected token: {ExpectedToken}, Actual token: {ActualToken}")]
+    private static partial void LogStaleCompletion(
+        ILogger logger,
+        Guid deliveryId,
+        DeliveryState deliveryState,
+        Guid? expectedToken,
+        Guid? actualToken);
 
     private sealed record DeliveryWorkItem(
         Guid DeliveryId,

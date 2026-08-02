@@ -19,12 +19,12 @@ test("registers an endpoint, delivers an event, and restores its status", async 
   ).toBeVisible();
 
   const prepareButton = page.getByRole("button", {
-    name: "Prepare success receiver",
+    name: "Prepare receiver",
   });
   await prepareButton.focus();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByText("Success receiver prepared. Continue to endpoint registration."),
+    page.getByText("Receiver prepared. Continue to endpoint registration."),
   ).toBeVisible();
 
   const endpointNameInput = page.getByRole("textbox", {

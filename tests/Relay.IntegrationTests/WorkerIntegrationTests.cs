@@ -147,31 +147,587 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
     [Fact]
     public async Task RetrySuccess()
     {
-        Assert.True(true); // Placeholder for retry success
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var receiverId = Guid.NewGuid();
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var targetUrl = $"{receiverOrigin}/webhooks/{receiverId:D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.retry\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-retry-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(
+                new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                correlationId);
+
+            var timeProvider = new FixedTimeProvider(TestUtcNow);
+            // Return 503 for first two attempts, 204 for the third.
+            var handler = new SequenceHandler(
+                new(HttpStatusCode.ServiceUnavailable),
+                new(HttpStatusCode.ServiceUnavailable),
+                new(HttpStatusCode.NoContent));
+            using var httpClientFactory = new DeterministicHttpClientFactory(handler);
+            var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
+
+            await using var database = _database.CreateDbContext();
+            var processor = new DeliveryProcessor(
+                database,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                timeProvider,
+                NullLogger<DeliveryProcessor>.Instance);
+
+            // Attempt 1: 503 → RetryScheduled
+            Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
+            await using (var check = _database.CreateDbContext())
+            {
+                var d = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, d.State);
+                Assert.Equal(1, d.AttemptCount);
+            }
+
+            // Advance time beyond the 1-second delay.
+            timeProvider = new FixedTimeProvider(TestUtcNow.AddSeconds(2));
+            await using var database2 = _database.CreateDbContext();
+            processor = new DeliveryProcessor(
+                database2,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                timeProvider,
+                NullLogger<DeliveryProcessor>.Instance);
+
+            // Attempt 2: 503 → RetryScheduled
+            Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
+            await using (var check = _database.CreateDbContext())
+            {
+                var d = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, d.State);
+                Assert.Equal(2, d.AttemptCount);
+            }
+
+            // Advance time beyond the 2-second delay.
+            timeProvider = new FixedTimeProvider(TestUtcNow.AddSeconds(5));
+            await using var database3 = _database.CreateDbContext();
+            processor = new DeliveryProcessor(
+                database3,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                timeProvider,
+                NullLogger<DeliveryProcessor>.Instance);
+
+            // Attempt 3: 204 → Succeeded
+            Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
+            await using (var check = _database.CreateDbContext())
+            {
+                var d = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.Succeeded, d.State);
+                Assert.Equal(3, d.AttemptCount);
+
+                var attempts = await check.DeliveryAttempts.AsNoTracking()
+                    .OrderBy(a => a.AttemptNumber).ToListAsync();
+                Assert.Equal(3, attempts.Count);
+                Assert.Equal(AttemptState.Failed, attempts[0].State);
+                Assert.Equal(503, attempts[0].HttpStatusCode);
+                Assert.Equal(AttemptState.Failed, attempts[1].State);
+                Assert.Equal(503, attempts[1].HttpStatusCode);
+                Assert.Equal(AttemptState.Succeeded, attempts[2].State);
+                Assert.Equal(204, attempts[2].HttpStatusCode);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
     }
 
     [Fact]
     public async Task RetryExhaustion()
     {
-        Assert.True(true); // Placeholder for retry exhaustion
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var receiverId = Guid.NewGuid();
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var targetUrl = $"{receiverOrigin}/webhooks/{receiverId:D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.exhaust\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-exhaust-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(
+                new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                correlationId);
+
+            var baseTime = TestUtcNow;
+            // All four attempts return 503.
+            var handler = new SequenceHandler(
+                new(HttpStatusCode.ServiceUnavailable),
+                new(HttpStatusCode.ServiceUnavailable),
+                new(HttpStatusCode.ServiceUnavailable),
+                new(HttpStatusCode.ServiceUnavailable));
+            using var httpClientFactory = new DeterministicHttpClientFactory(handler);
+            var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
+
+            for (var attempt = 1; attempt <= 4; attempt++)
+            {
+                var delay = attempt > 1 ? RelayLimits.RetryDelays[attempt - 2] : TimeSpan.Zero;
+                var now = baseTime.Add(delay).AddSeconds(1); // after the retry delay
+                var timeProvider = new FixedTimeProvider(now);
+                await using var database = _database.CreateDbContext();
+                var processor = new DeliveryProcessor(
+                    database,
+                    httpClientFactory,
+                    targetPolicy,
+                    secretProtector,
+                    timeProvider,
+                    NullLogger<DeliveryProcessor>.Instance);
+
+                Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
+
+                await using var check = _database.CreateDbContext();
+                var d = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(attempt, d.AttemptCount);
+
+                if (attempt < 4)
+                {
+                    Assert.Equal(DeliveryState.RetryScheduled, d.State);
+                }
+                else
+                {
+                    Assert.Equal(DeliveryState.Failed, d.State);
+                    Assert.Equal("http_status", d.ErrorCode);
+                }
+
+                baseTime = now;
+            }
+
+            // Verify no more processing (delivery is Failed).
+            await using var finalDatabase = _database.CreateDbContext();
+            var finalProcessor = new DeliveryProcessor(
+                finalDatabase,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                new FixedTimeProvider(baseTime.AddHours(1)),
+                NullLogger<DeliveryProcessor>.Instance);
+            Assert.False(await finalProcessor.TryProcessNextAsync(CancellationToken.None));
+
+            // Verify all attempts recorded.
+            await using var verifyDatabase = _database.CreateDbContext();
+            var attempts = await verifyDatabase.DeliveryAttempts.AsNoTracking()
+                .OrderBy(a => a.AttemptNumber).ToListAsync();
+            Assert.Equal(4, attempts.Count);
+            Assert.All(attempts, a => Assert.Equal(AttemptState.Failed, a.State));
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
     }
 
     [Fact]
     public async Task PermanentFailure()
     {
-        Assert.True(true); // Placeholder for permanent failure
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var receiverId = Guid.NewGuid();
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var targetUrl = $"{receiverOrigin}/webhooks/{receiverId:D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.perm\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-perm-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(
+                new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                correlationId);
+
+            // 400 is non-retryable (not 408, 429, 5xx, timeout, or transport error).
+            var handler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.BadRequest));
+            using var httpClientFactory = new DeterministicHttpClientFactory(handler);
+            var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
+            var timeProvider = new FixedTimeProvider(TestUtcNow);
+
+            await using var database = _database.CreateDbContext();
+            var processor = new DeliveryProcessor(
+                database,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                timeProvider,
+                NullLogger<DeliveryProcessor>.Instance);
+
+            Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
+
+            await using var check = _database.CreateDbContext();
+            var d = await check.Deliveries.AsNoTracking().SingleAsync();
+            Assert.Equal(DeliveryState.Failed, d.State);
+            Assert.Equal(1, d.AttemptCount);
+            Assert.Equal("http_status", d.ErrorCode);
+
+            var attempt = await check.DeliveryAttempts.AsNoTracking().SingleAsync();
+            Assert.Equal(AttemptState.Failed, attempt.State);
+            Assert.Equal(400, attempt.HttpStatusCode);
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
     }
 
     [Fact]
     public async Task StaleClaimRecovery()
     {
-        Assert.True(true); // Placeholder for stale claim recovery
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var receiverId = Guid.NewGuid();
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var targetUrl = $"{receiverOrigin}/webhooks/{receiverId:D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.stale\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-stale-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(
+                new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                correlationId);
+
+            // Manually simulate a claimed delivery whose lease expired (crashed worker).
+            var staleClaimToken = Guid.NewGuid();
+            var staleStartedAt = TestUtcNow.AddMinutes(-1);
+            var staleClaimExpires = TestUtcNow.AddSeconds(-10);
+            await using (var setupDb = _database.CreateDbContext())
+            {
+                var d = await setupDb.Deliveries.SingleAsync();
+                d.Claim(staleClaimToken, staleStartedAt);
+                setupDb.DeliveryAttempts.Add(new DeliveryAttempt(
+                    Guid.NewGuid(),
+                    d.Id,
+                    d.AttemptCount,
+                    staleStartedAt));
+                // Override the claim expiry to be in the past.
+                setupDb.Entry(d).Property("ClaimExpiresAtUtc").CurrentValue = staleClaimExpires;
+                await setupDb.SaveChangesAsync();
+            }
+
+            var handler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.NoContent));
+            using var httpClientFactory = new DeterministicHttpClientFactory(handler);
+            var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
+
+            // Run recovery and reprocessing.
+            var recoveryTime = new FixedTimeProvider(TestUtcNow);
+            await using var recoveryDatabase = _database.CreateDbContext();
+            var recoveryProcessor = new DeliveryProcessor(
+                recoveryDatabase,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                recoveryTime,
+                NullLogger<DeliveryProcessor>.Instance);
+
+            // The first call should recover the stale claim (returns true).
+            Assert.True(await recoveryProcessor.TryProcessNextAsync(CancellationToken.None));
+
+            await using var verifyDb = _database.CreateDbContext();
+            var delivery = await verifyDb.Deliveries.AsNoTracking().SingleAsync();
+            // After recovery, the original attempt is marked failed with claim_expired.
+            // The delivery is retried (or failed if exhausted). Since this is attempt 1
+            // and we have 4 max, it should be RetryScheduled.
+            Assert.Equal(DeliveryState.RetryScheduled, delivery.State);
+            Assert.Equal(1, delivery.AttemptCount);
+
+            var attempts = await verifyDb.DeliveryAttempts.AsNoTracking()
+                .OrderBy(a => a.AttemptNumber).ToListAsync();
+            Assert.Single(attempts);
+            Assert.Equal(AttemptState.Failed, attempts[0].State);
+            Assert.Equal("claim_expired", attempts[0].ErrorCode);
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CompletionAfterClaimRecoveryDoesNotOverwriteRecoveredState()
+    {
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var targetUrl = $"{receiverOrigin}/webhooks/{Guid.NewGuid():D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.stale-completion\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-stale-completion-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(
+                new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                correlationId);
+
+            var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
+            var blockingHandler = new BlockingSuccessHandler();
+            using var blockingFactory = new DeterministicHttpClientFactory(blockingHandler);
+            await using var originalDatabase = _database.CreateDbContext();
+            var originalProcessor = new DeliveryProcessor(
+                originalDatabase,
+                blockingFactory,
+                targetPolicy,
+                secretProtector,
+                new FixedTimeProvider(TestUtcNow),
+                NullLogger<DeliveryProcessor>.Instance);
+
+            var originalRun = originalProcessor.TryProcessNextAsync(CancellationToken.None);
+            await blockingHandler.RequestStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+            await using (var recoveryDatabase = _database.CreateDbContext())
+            {
+                var recoveryProcessor = new DeliveryProcessor(
+                    recoveryDatabase,
+                    blockingFactory,
+                    targetPolicy,
+                    secretProtector,
+                    new FixedTimeProvider(TestUtcNow.AddSeconds(31)),
+                    NullLogger<DeliveryProcessor>.Instance);
+                Assert.True(await recoveryProcessor.TryProcessNextAsync(CancellationToken.None));
+            }
+
+            blockingHandler.Release();
+            Assert.True(await originalRun);
+
+            await using (var recoveredDatabase = _database.CreateDbContext())
+            {
+                var recoveredDelivery = await recoveredDatabase.Deliveries
+                    .AsNoTracking()
+                    .SingleAsync();
+                var recoveredAttempt = await recoveredDatabase.DeliveryAttempts
+                    .AsNoTracking()
+                    .SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, recoveredDelivery.State);
+                Assert.Equal(AttemptState.Failed, recoveredAttempt.State);
+                Assert.Equal("claim_expired", recoveredAttempt.ErrorCode);
+            }
+
+            using var successFactory = new DeterministicHttpClientFactory(
+                new SequenceHandler(new HttpResponseMessage(HttpStatusCode.NoContent)));
+            await using var retryDatabase = _database.CreateDbContext();
+            var retryProcessor = new DeliveryProcessor(
+                retryDatabase,
+                successFactory,
+                targetPolicy,
+                secretProtector,
+                new FixedTimeProvider(TestUtcNow.AddSeconds(32)),
+                NullLogger<DeliveryProcessor>.Instance);
+            Assert.True(await retryProcessor.TryProcessNextAsync(CancellationToken.None));
+
+            await using var verificationDatabase = _database.CreateDbContext();
+            var delivery = await verificationDatabase.Deliveries.AsNoTracking().SingleAsync();
+            var attempts = await verificationDatabase.DeliveryAttempts
+                .AsNoTracking()
+                .OrderBy(attempt => attempt.AttemptNumber)
+                .ToListAsync();
+            Assert.Equal(DeliveryState.Succeeded, delivery.State);
+            Assert.Equal(2, delivery.AttemptCount);
+            Assert.Equal([AttemptState.Failed, AttemptState.Succeeded], attempts.Select(attempt => attempt.State));
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
     }
 
     [Fact]
     public async Task DueTimeEnforcement()
     {
-        Assert.True(true); // Placeholder for due time enforcement
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var receiverId = Guid.NewGuid();
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var targetUrl = $"{receiverOrigin}/webhooks/{receiverId:D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.due\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-due-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(
+                new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                correlationId);
+
+            // First, claim and fail the delivery so it schedules a retry.
+            var handler = new SequenceHandler(
+                new(HttpStatusCode.ServiceUnavailable),
+                new(HttpStatusCode.NoContent));
+            using var httpClientFactory = new DeterministicHttpClientFactory(handler);
+            var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
+
+            var timeProvider = new FixedTimeProvider(TestUtcNow);
+            await using var firstDatabase = _database.CreateDbContext();
+            var firstProcessor = new DeliveryProcessor(
+                firstDatabase,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                timeProvider,
+                NullLogger<DeliveryProcessor>.Instance);
+            Assert.True(await firstProcessor.TryProcessNextAsync(CancellationToken.None));
+
+            // Delivery is RetryScheduled with NextAttemptAtUtc = TestUtcNow + 1s.
+            await using (var check = _database.CreateDbContext())
+            {
+                var d = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, d.State);
+                Assert.NotNull(d.NextAttemptAtUtc);
+            }
+
+            // Try to process before the retry is due — should find nothing.
+            var earlyTime = new FixedTimeProvider(TestUtcNow.AddMilliseconds(500));
+            await using var earlyDatabase = _database.CreateDbContext();
+            var earlyProcessor = new DeliveryProcessor(
+                earlyDatabase,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                earlyTime,
+                NullLogger<DeliveryProcessor>.Instance);
+            Assert.False(await earlyProcessor.TryProcessNextAsync(CancellationToken.None));
+
+            // Now advance past the due time and the retry should be claimed.
+            var dueTime = new FixedTimeProvider(TestUtcNow.AddSeconds(2));
+            await using var dueDatabase = _database.CreateDbContext();
+            var dueProcessor = new DeliveryProcessor(
+                dueDatabase,
+                httpClientFactory,
+                targetPolicy,
+                secretProtector,
+                dueTime,
+                NullLogger<DeliveryProcessor>.Instance);
+            Assert.True(await dueProcessor.TryProcessNextAsync(CancellationToken.None));
+
+            await using var verifyDb = _database.CreateDbContext();
+            var delivery = await verifyDb.Deliveries.AsNoTracking().SingleAsync();
+            Assert.Equal(DeliveryState.Succeeded, delivery.State);
+            Assert.Equal(2, delivery.AttemptCount);
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
     }
 
     private async Task SeedQueuedDeliveryAsync(
@@ -291,4 +847,40 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
         string Signature,
         string CorrelationId,
         byte[] Body);
+
+    private sealed class SequenceHandler(params HttpResponseMessage[] responses) : HttpMessageHandler
+    {
+        private int _index;
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var response = _index < responses.Length
+                ? responses[_index++]
+                : responses[^1];
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class BlockingSuccessHandler : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource _release = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _requestStarted = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task RequestStarted => _requestStarted.Task;
+
+        public void Release() => _release.TrySetResult();
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            _requestStarted.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+    }
 }

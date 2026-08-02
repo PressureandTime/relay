@@ -3,9 +3,12 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Relay.Core;
 using Relay.Infrastructure;
+using Testcontainers.PostgreSql;
 
 namespace Relay.IntegrationTests;
 
@@ -58,7 +61,7 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         var pendingMigrations = (await database.Database.GetPendingMigrationsAsync()).ToArray();
 
         Assert.Equal(0, _database.AppliedMigrationCountBeforeMigration);
-        Assert.Equal(3, _database.AvailableMigrationCount);
+        Assert.Equal(4, _database.AvailableMigrationCount);
         Assert.Equal(
             _database.AvailableMigrationCount,
             _database.AppliedMigrationCountAfterMigration);
@@ -68,6 +71,72 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         Assert.Equal(0, await database.WebhookEvents.CountAsync());
         Assert.Equal(0, await database.Deliveries.CountAsync());
         Assert.Equal(0, await database.DeliveryAttempts.CountAsync());
+    }
+
+    [Fact]
+    public async Task BackfillMigrationRepairsAlreadyUpgradedInFlightDeliveryAndAttempt()
+    {
+        await using var container = new PostgreSqlBuilder("postgres:18.4")
+            .WithDatabase($"relay_upgrade_{Guid.NewGuid():N}")
+            .WithUsername("relay")
+            .WithPassword($"relay-{Guid.NewGuid():N}")
+            .Build();
+        await container.StartAsync();
+
+        var options = new DbContextOptionsBuilder<RelayDbContext>()
+            .UseNpgsql(
+                container.GetConnectionString(),
+                npgsql => npgsql.MigrationsAssembly(typeof(RelayDbContext).Assembly.FullName))
+            .Options;
+        await using var database = new RelayDbContext(options);
+        var migrator = database.GetService<IMigrator>();
+        await migrator.MigrateAsync("20260801221349_AddRetryAndReplay");
+
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var claimToken = Guid.NewGuid();
+        var payloadJson = "{\"value\":1}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.migration\",\"payload\":{{\"value\":1}}}}";
+
+        await database.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO webhook_endpoints
+                ("Id", "Name", "TargetUrl", "ProtectedSigningSecret", "CreatedAtUtc")
+            VALUES
+                ({endpointId}, 'Migration receiver', 'http://receiver.test:8080/webhooks/11111111-1111-1111-1111-111111111111', 'protected', {TestUtcNow});
+
+            INSERT INTO webhook_events
+                ("Id", "EndpointId", "EventType", "PayloadJson", "IdempotencyKey", "RequestFingerprint", "CorrelationId", "CreatedAtUtc")
+            VALUES
+                ({eventId}, {endpointId}, 'demo.migration', CAST({payloadJson} AS jsonb), 'migration-event', {new string('a', 64)}, 'migration-correlation', {TestUtcNow});
+
+            INSERT INTO deliveries
+                ("Id", "EventId", "EndpointId", "State", "EnvelopeJson", "EnvelopeHash", "ClaimToken", "CorrelationId", "CreatedAtUtc", "StartedAtUtc")
+            VALUES
+                ({deliveryId}, {eventId}, {endpointId}, 'Processing', {envelopeJson}, {new string('b', 64)}, {claimToken}, 'migration-correlation', {TestUtcNow}, {TestUtcNow});
+
+            INSERT INTO delivery_attempts
+                ("Id", "DeliveryId", "AttemptNumber", "State", "StartedAtUtc")
+            VALUES
+                ({attemptId}, {deliveryId}, 1, 'Processing', {TestUtcNow});
+            """);
+
+        await migrator.MigrateAsync();
+        database.ChangeTracker.Clear();
+
+        var delivery = await database.Deliveries.AsNoTracking().SingleAsync();
+        var attempt = await database.DeliveryAttempts.AsNoTracking().SingleAsync();
+        Assert.Equal(1, delivery.AttemptCount);
+        Assert.Equal(DeliveryState.Failed, delivery.State);
+        Assert.Null(delivery.ClaimToken);
+        Assert.Equal("migration_backfill", delivery.ErrorCode);
+        Assert.NotNull(delivery.CompletedAtUtc);
+        Assert.Equal(AttemptState.Failed, attempt.State);
+        Assert.Equal("migration_backfill", attempt.ErrorCode);
+        Assert.NotNull(attempt.CompletedAtUtc);
+        Assert.NotNull(attempt.DurationMilliseconds);
     }
 
     [Fact]
@@ -214,6 +283,71 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task ReplayingFailedDeliveryIsIdempotentAndPreservesEvent()
+    {
+        var endpoint = await CreateEndpointAsync();
+        var original = await SubmitEventAsync(
+            endpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}");
+        await MarkDeliveryFailedAsync(original.DeliveryId!.Value);
+        var idempotencyKey = $"replay:{Guid.NewGuid():N}";
+
+        var first = await ReplayDeliveryAsync(original.DeliveryId.Value, idempotencyKey);
+        var repeated = await ReplayDeliveryAsync(original.DeliveryId.Value, idempotencyKey);
+
+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, repeated.StatusCode);
+        Assert.False(first.Replayed);
+        Assert.True(repeated.Replayed);
+        Assert.Equal(original.DeliveryId, first.OriginalDeliveryId);
+        Assert.Equal(first.DeliveryId, repeated.DeliveryId);
+        Assert.Equal(first.CorrelationId, repeated.CorrelationId);
+        Assert.NotEqual(original.CorrelationId, first.CorrelationId);
+
+        await using var database = _database.CreateDbContext();
+        var deliveries = await database.Deliveries
+            .AsNoTracking()
+            .OrderBy(delivery => delivery.CreatedAtUtc)
+            .ToListAsync();
+        Assert.Equal(2, deliveries.Count);
+        var replay = deliveries[1];
+        Assert.Equal(original.EventId, replay.EventId);
+        Assert.Equal(original.DeliveryId, replay.ReplayOfDeliveryId);
+        Assert.Equal(idempotencyKey, replay.ReplayIdempotencyKey);
+        Assert.Equal(DeliveryState.Queued, replay.State);
+        using var envelope = JsonDocument.Parse(replay.EnvelopeJson);
+        Assert.Equal(replay.Id, envelope.RootElement.GetProperty("deliveryId").GetGuid());
+        Assert.Equal(original.EventId, envelope.RootElement.GetProperty("eventId").GetGuid());
+    }
+
+    [Fact]
+    public async Task ConcurrentReplayRequestsCreateOneReplayDelivery()
+    {
+        var endpoint = await CreateEndpointAsync();
+        var original = await SubmitEventAsync(
+            endpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}");
+        await MarkDeliveryFailedAsync(original.DeliveryId!.Value);
+        var idempotencyKey = $"replay:{Guid.NewGuid():N}";
+
+        var submissions = await Task.WhenAll(
+            Enumerable.Range(0, 8)
+                .Select(_ => ReplayDeliveryAsync(original.DeliveryId.Value, idempotencyKey)));
+
+        Assert.All(
+            submissions,
+            submission => Assert.Equal(HttpStatusCode.Accepted, submission.StatusCode));
+        Assert.Single(submissions.Select(submission => submission.DeliveryId).Distinct());
+        Assert.Equal(1, submissions.Count(submission => !submission.Replayed));
+        Assert.Equal(7, submissions.Count(submission => submission.Replayed));
+
+        await using var database = _database.CreateDbContext();
+        Assert.Equal(2, await database.Deliveries.CountAsync());
+    }
+
+    [Fact]
     public async Task DeliveryHistoryAndDetailExposeOnlySanitizedFields()
     {
         var endpoint = await CreateEndpointAsync();
@@ -338,6 +472,71 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
             rawResponse);
     }
 
+    private async Task MarkDeliveryFailedAsync(Guid deliveryId)
+    {
+        await using var database = _database.CreateDbContext();
+        var delivery = await database.Deliveries.SingleAsync(candidate => candidate.Id == deliveryId);
+        var claimToken = Guid.NewGuid();
+        var startedAtUtc = TestUtcNow.AddSeconds(1);
+        var completedAtUtc = TestUtcNow.AddSeconds(2);
+        delivery.Claim(claimToken, startedAtUtc);
+        delivery.MarkFailed(
+            claimToken,
+            "http_status",
+            "The receiver returned HTTP 400.",
+            completedAtUtc);
+        var attempt = new DeliveryAttempt(
+            Guid.NewGuid(),
+            delivery.Id,
+            delivery.AttemptCount,
+            startedAtUtc);
+        attempt.MarkFailed(
+            400,
+            "http_status",
+            "The receiver returned HTTP 400.",
+            completedAtUtc,
+            1000);
+        database.DeliveryAttempts.Add(attempt);
+        await database.SaveChangesAsync();
+    }
+
+    private async Task<ReplaySubmission> ReplayDeliveryAsync(
+        Guid originalDeliveryId,
+        string idempotencyKey)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/deliveries/{originalDeliveryId:D}/replays");
+        request.Headers.Add("Idempotency-Key", idempotencyKey);
+
+        using var response = await _client.SendAsync(request);
+        var rawResponse = await response.Content.ReadAsStringAsync();
+        var replayed = response.Headers.TryGetValues("Idempotency-Replayed", out var values)
+            && values.Single() == "true";
+
+        if (response.StatusCode is not HttpStatusCode.Accepted)
+        {
+            return new ReplaySubmission(
+                response.StatusCode,
+                null,
+                null,
+                null,
+                null,
+                replayed,
+                rawResponse);
+        }
+
+        using var document = JsonDocument.Parse(rawResponse);
+        return new ReplaySubmission(
+            response.StatusCode,
+            document.RootElement.GetProperty("originalDeliveryId").GetGuid(),
+            document.RootElement.GetProperty("deliveryId").GetGuid(),
+            document.RootElement.GetProperty("state").GetString(),
+            document.RootElement.GetProperty("correlationId").GetString(),
+            replayed,
+            rawResponse);
+    }
+
     private static string[] GetPropertyNames(string json)
     {
         using var document = JsonDocument.Parse(json);
@@ -379,6 +578,15 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
     private sealed record EventSubmission(
         HttpStatusCode StatusCode,
         Guid? EventId,
+        Guid? DeliveryId,
+        string? State,
+        string? CorrelationId,
+        bool Replayed,
+        string RawResponse);
+
+    private sealed record ReplaySubmission(
+        HttpStatusCode StatusCode,
+        Guid? OriginalDeliveryId,
         Guid? DeliveryId,
         string? State,
         string? CorrelationId,

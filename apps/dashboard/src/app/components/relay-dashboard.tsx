@@ -20,6 +20,10 @@ import {
   normalizeDeliveryDetail,
   normalizeEndpoint,
 } from "@/lib/contracts";
+import {
+  type ReplayIntent,
+  resolveReplayIntent,
+} from "@/lib/replay-intent";
 
 const POLL_INTERVAL_MS = 1_000;
 const MAX_POLL_ATTEMPTS = 30;
@@ -123,8 +127,18 @@ async function requestJson<T>(
   return body as T;
 }
 
-function StatusMessage({ status }: { status: RequestStatus }) {
-  const role = status.phase === "error" ? "alert" : "status";
+function StatusMessage({
+  status,
+  announce = true,
+}: {
+  status: RequestStatus;
+  announce?: boolean;
+}) {
+  const role = announce
+    ? status.phase === "error"
+      ? "alert"
+      : "status"
+    : undefined;
   return (
     <p className={`requestStatus requestStatus--${status.phase}`} role={role}>
       {status.message}
@@ -197,6 +211,7 @@ export function RelayDashboard({
     "Dashboard ready. Follow the three steps to send a synthetic event.",
   );
   const detailControllerRef = useRef<AbortController | null>(null);
+  const replayIntentRef = useRef<ReplayIntent | null>(null);
 
   const refreshHistory = useCallback(async (signal?: AbortSignal) => {
     setHistoryStatus({
@@ -332,7 +347,7 @@ export function RelayDashboard({
     setSigningSecret("");
     setReceiverStatus({
       phase: "loading",
-      message: "Preparing an ephemeral success receiver…",
+      message: "Preparing an ephemeral receiver…",
     });
     setEndpointStatus(idleEndpoint);
 
@@ -457,6 +472,7 @@ export function RelayDashboard({
     }
 
     setTrackedDeliveryId("");
+    setReplayStatus({ phase: "idle", message: "" });
     setEventStatus({ phase: "loading", message: "Submitting event…" });
     setPollStatus({
       phase: "idle",
@@ -525,6 +541,7 @@ export function RelayDashboard({
     detailControllerRef.current?.abort();
     const controller = new AbortController();
     detailControllerRef.current = controller;
+    setReplayStatus({ phase: "idle", message: "" });
     setSelectedDeliveryId(deliveryId);
     setDeliveryDetail(null);
     setDetailStatus({
@@ -574,6 +591,11 @@ export function RelayDashboard({
       phase: "loading",
       message: "Replaying delivery…",
     });
+    const replayIntent = resolveReplayIntent(
+      deliveryDetail.id,
+      replayIntentRef.current,
+    );
+    replayIntentRef.current = replayIntent;
 
     try {
       const body = await requestJson<ReplayAcceptedResponse>(
@@ -582,14 +604,33 @@ export function RelayDashboard({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Idempotency-Key": crypto.randomUUID(),
+            "Idempotency-Key": replayIntent.idempotencyKey,
           },
         },
       );
+      if (!body.deliveryId || !body.originalDeliveryId || !body.state) {
+        throw new Error("Replay response was missing required fields.");
+      }
+      if (
+        replayIntentRef.current?.idempotencyKey ===
+        replayIntent.idempotencyKey
+      ) {
+        replayIntentRef.current = null;
+      }
 
       setReplayStatus({
         phase: "success",
         message: `Replay scheduled. New delivery ${body.deliveryId} is being tracked.`,
+      });
+      setSelectedDeliveryId(body.deliveryId);
+      setDeliveryDetail(null);
+      setDetailStatus({
+        phase: "loading",
+        message: "Waiting for the replay delivery attempt…",
+      });
+      setPollStatus({
+        phase: "loading",
+        message: "Checking replay delivery state…",
       });
       setAnnouncement("Delivery replay scheduled.");
       setTrackedDeliveryId(body.deliveryId);
@@ -805,7 +846,9 @@ export function RelayDashboard({
                 </button>
               </form>
               <StatusMessage status={eventStatus} />
-              {trackedDeliveryId ? <StatusMessage status={pollStatus} /> : null}
+              {trackedDeliveryId ? (
+                <StatusMessage status={pollStatus} announce={false} />
+              ) : null}
             </li>
           </ol>
         </section>
@@ -892,6 +935,9 @@ export function RelayDashboard({
           {deliveryDetail ? <StateBadge state={deliveryDetail.state} /> : null}
         </div>
         <StatusMessage status={detailStatus} />
+        {replayStatus.phase !== "idle" ? (
+          <StatusMessage status={replayStatus} />
+        ) : null}
 
         {deliveryDetail ? (
           <div className="detailContent">
@@ -956,9 +1002,6 @@ export function RelayDashboard({
                     ? "Scheduling replay…"
                     : "Replay delivery"}
                 </button>
-                {replayStatus.phase !== "idle" ? (
-                  <StatusMessage status={replayStatus} />
-                ) : null}
               </div>
             ) : null}
 

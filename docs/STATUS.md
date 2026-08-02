@@ -7,28 +7,38 @@
 | Endpoint registration | ✓ | URL allowlist, signing key protection, validation |
 | Idempotent event creation | ✓ | SHA-256 fingerprint, conflict detection, concurrency |
 | HMAC-signed delivery | ✓ | Versioned signing string, exact-byte envelope |
-| Automatic retries | ✓ | Exponential backoff, 4 attempts max, retryable classification |
-| Stale-claim recovery | ✓ | 30-second lease, expired claims fail and re-queue |
+| Automatic retries | ✓ | Exponential 1 s, 2 s, and 4 s backoff; 4 attempts max; retryable classification |
+| Stale-claim recovery | ✓ | 30-second lease, expired claims re-queue |
 | Manual replay | ✓ | Idempotent, new envelope and correlation, lineage tracking |
 | Receiver simulator | ✓ | success, retryThenSucceed, failUntilReplay, alwaysFail |
-| Dashboard | ✓ | Live polling, retry/replay UI, accessible, responsive |
+| Dashboard | ✓ | Live polling, replay UI, accessible, responsive |
 
 ## Test matrix
 
 | Suite | Tests | Tooling |
 |-------|-------|---------|
-| .NET unit | Domain state, signing, retry classification, delays, lease | xUnit |
-| .NET integration | Migrations, claiming, retry, exhaustion, permanent failure, stale recovery, replay, concurrency, sanitized responses | Testcontainers + PostgreSQL 18 |
-| Frontend unit | Contract normalization, privacy, new states, replay fields | Vitest |
-| E2E | Success delivery, retry-then-success, fail-then-replay, reload persistence, keyboard | Playwright + Chromium |
+| .NET unit | 25 | xUnit |
+| .NET integration | 21 | Testcontainers + PostgreSQL 18 |
+| Frontend unit | 6 | Vitest |
+| E2E | 3 workflows: success, retry, replay | Playwright + Chromium |
+
+## Known issues
+
+- `npm audit --package-lock-only --audit-level=high` exits 1. The current lockfile reports three high findings and no low or critical findings. All three are in Next.js and its exact PostCSS/Sharp dependency chain; npm reports no compatible fix. Relay does not accept CSS input or use Next.js image processing, and incompatible overrides are not used. Recheck this constraint when a supported Next.js release is available.
 
 ## Dependency notes
 
-- npm pins Next.js 16.2.12 directly from registry tarballs. PostCSS and Sharp advisories remain open pending a compatible Next.js release.
-- Vitest 4.1.0 and Vite 7.3.5 are pinned to avoid critical/high advisory ranges.
-- NuGet pins `Microsoft.OpenApi` to 2.11.0 to resolve a transitive high-severity advisory.
-- Playwright is pinned to 1.58.2; newer metadata referenced an unpublished runtime.
+- Next.js 16.2.12 resolves PostCSS 8.4.31 and Sharp 0.34.5.
+- Vite 8.0.16 resolves PostCSS 8.5.18, Lightning CSS 1.32.0, and Rolldown 1.0.3. Its previous esbuild dependency and advisory are no longer present.
+- Vitest 4.1.1 supports Vite 8. Cross-platform Next SWC, Lightning CSS, and Rolldown native tarballs are pinned because registry metadata lags their published releases.
+- Incompatible PostCSS and Sharp overrides are not used.
+- The NuGet vulnerability check reports no vulnerable packages for the solution.
+- Playwright is pinned to 1.58.2.
 
-## Current blockers
+## Verified locally
 
-None.
+- .NET Release build: 0 warnings, 0 errors.
+- xUnit: 25 unit tests and 21 PostgreSQL integration tests passed.
+- Frontend: clean `npm ci`, ESLint, TypeScript, 6 Vitest tests, and the Next.js production build passed. A separate Linux container clean install and Vitest run also passed.
+- Docker Compose: npm 11.16 clean install and all images built; migration exited 0; API, worker, receiver, PostgreSQL, and dashboard became healthy.
+- Playwright: 3 Chromium workflows passed.

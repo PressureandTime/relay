@@ -155,9 +155,7 @@ public sealed class Delivery
             throw new InvalidOperationException("Only processing deliveries with expired claims can be recovered.");
         }
 
-        ClaimToken = null;
-        ClaimedAtUtc = null;
-        ClaimExpiresAtUtc = null;
+        ScheduleRetry(now);
     }
 
     private void EnsureClaim(Guid claimToken)

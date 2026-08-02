@@ -71,3 +71,9 @@ public sealed record DeliveryDetailResponse(
     DateTimeOffset? NextAttemptAtUtc,
     Guid? ReplayOfDeliveryId,
     IReadOnlyList<DeliveryAttemptResponse> Attempts);
+
+public sealed record ReplayAcceptedResponse(
+    Guid OriginalDeliveryId,
+    Guid DeliveryId,
+    DeliveryState State,
+    string CorrelationId);

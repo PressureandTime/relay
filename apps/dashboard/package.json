@@ -30,7 +30,7 @@
     "js-yaml": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.3.0.tgz",
     "typescript": "5.9.3",
     "typescript-eslint": "8.56.1",
-    "vite": "https://registry.npmjs.org/vite/-/vite-7.3.5.tgz",
-    "vitest": "https://registry.npmjs.org/vitest/-/vitest-4.1.0.tgz"
+    "vite": "https://registry.npmjs.org/vite/-/vite-8.0.16.tgz",
+    "vitest": "https://registry.npmjs.org/vitest/-/vitest-4.1.1.tgz"
   }
 }

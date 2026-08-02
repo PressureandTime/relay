@@ -75,7 +75,7 @@ docker compose up --build --wait --wait-timeout 180
 npm run test:e2e
 ```
 
-Integration tests start a disposable PostgreSQL container through Testcontainers. Playwright tests complete delivery workflows, verify retry behavior, test replay, and confirm persistence after reload.
+Integration tests start disposable PostgreSQL containers through Testcontainers. Three Playwright tests cover immediate success, retry-then-success, and failed-delivery replay through the dashboard.
 
 ## Security boundary
 

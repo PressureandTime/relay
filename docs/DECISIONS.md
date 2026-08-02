@@ -34,9 +34,9 @@ The browser communicates through fixed Next.js rewrites to internal API and rece
 
 Status: accepted
 
-Live package registries and vulnerability feeds determine exact versions. npm pins specific tarballs for Next.js, Vitest, and Vite where registry metadata lagged behind published releases. NuGet pins `Microsoft.OpenApi` to 2.11.0 to resolve a transitive advisory. Lockfiles record the complete integrity-checked graph.
+Live package registries and vulnerability feeds determine exact versions. npm pins specific tarballs for Next.js, Vitest, Vite, and their cross-platform native packages where registry metadata lagged behind published releases. The lockfile retains every supported Next SWC, Lightning CSS, and Rolldown platform so clean Linux builds do not invoke lockfile repair or miss a native test runner. NuGet pins `Microsoft.OpenApi` to 2.11.0 to resolve a transitive advisory. Lockfiles record the complete integrity-checked graph.
 
-npm currently reports high-severity advisories for PostCSS and Sharp required by Next.js with no compatible fix available. Unsupported major-version overrides are not used. These pins are maintenance constraints reviewed when upstream releases are available.
+npm currently reports high-severity advisories for PostCSS and Sharp required by Next.js with no compatible fix available. Relay does not accept CSS input and does not use Next.js image processing. Unsupported dependency overrides are not used; the constraint is reviewed when upstream releases are available.
 
 ## 007 — Preserve delivery envelopes as text
 
@@ -63,6 +63,8 @@ State flow: Queued → Processing → RetryScheduled → Processing → … → 
 Status: accepted
 
 Each claim sets a 30-second lease (`ClaimExpiresAtUtc`). If a worker crashes or stalls, the recovery scan finds `Processing` deliveries past their lease, marks the in-progress attempt as failed with `claim_expired`, and either schedules a retry (if attempts remain) or marks the delivery terminally failed. This uses `TimeProvider` so tests do not sleep.
+
+The subsequent `BackfillRetryClaims` migration backfills attempt counts from existing attempt rows. Deliveries and attempts that were already processing are marked failed with `migration_backfill`, completed, and stripped of their old claim token so databases that had already applied the lease schema cannot remain stranded after upgrade.
 
 ## 011 — Idempotent manual replay
 
