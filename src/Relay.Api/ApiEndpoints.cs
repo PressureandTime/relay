@@ -36,7 +36,8 @@ public static class ApiEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound);
         api.MapGet("/deliveries", GetDeliveriesAsync)
             .WithName("GetDeliveries")
-            .Produces<IReadOnlyList<DeliverySummaryResponse>>();
+            .Produces<IReadOnlyList<DeliverySummaryResponse>>()
+            .ProducesValidationProblem();
         api.MapPost("/deliveries/{deliveryId:guid}/replays", ReplayDeliveryAsync)
             .WithName("ReplayDelivery")
             .Produces<ReplayAcceptedResponse>(StatusCodes.Status202Accepted)
@@ -260,38 +261,124 @@ public static class ApiEndpoints
     }
 
     private static async Task<IResult> GetDeliveriesAsync(
+        string? state,
+        Guid? endpointId,
+        string? eventType,
         int? limit,
         RelayDbContext database,
         CancellationToken cancellationToken)
     {
+        var errors = ValidateDeliveryFilters(
+            state,
+            endpointId,
+            eventType,
+            out var stateFilter,
+            out var normalizedEventType);
+        if (errors.Count > 0)
+        {
+            return Results.ValidationProblem(errors);
+        }
+
         var boundedLimit = Math.Clamp(limit ?? 20, 1, 100);
-        var deliveries = await (
+        var query =
             from delivery in database.Deliveries.AsNoTracking()
             join endpoint in database.WebhookEndpoints.AsNoTracking()
                 on delivery.EndpointId equals endpoint.Id
             join webhookEvent in database.WebhookEvents.AsNoTracking()
                 on delivery.EventId equals webhookEvent.Id
-            orderby delivery.CreatedAtUtc descending
-            select new DeliverySummaryResponse(
-                delivery.Id,
-                delivery.EventId,
-                delivery.EndpointId,
-                endpoint.Name,
+            select new
+            {
+                Delivery = delivery,
+                EndpointName = endpoint.Name,
                 webhookEvent.EventType,
-                delivery.State,
-                delivery.CorrelationId,
-                delivery.ErrorCode,
-                delivery.ErrorMessage,
-                delivery.CreatedAtUtc,
-                delivery.StartedAtUtc,
-                delivery.CompletedAtUtc,
-                delivery.AttemptCount,
+            };
+
+        if (stateFilter is not null)
+        {
+            query = query.Where(item => item.Delivery.State == stateFilter);
+        }
+
+        if (endpointId is not null)
+        {
+            query = query.Where(item => item.Delivery.EndpointId == endpointId);
+        }
+
+        if (normalizedEventType is not null)
+        {
+            query = query.Where(item => item.EventType == normalizedEventType);
+        }
+
+        var deliveries = await query
+            .OrderByDescending(item => item.Delivery.CreatedAtUtc)
+            .Select(item => new DeliverySummaryResponse(
+                item.Delivery.Id,
+                item.Delivery.EventId,
+                item.Delivery.EndpointId,
+                item.EndpointName,
+                item.EventType,
+                item.Delivery.State,
+                item.Delivery.CorrelationId,
+                item.Delivery.ErrorCode,
+                item.Delivery.ErrorMessage,
+                item.Delivery.CreatedAtUtc,
+                item.Delivery.StartedAtUtc,
+                item.Delivery.CompletedAtUtc,
+                item.Delivery.AttemptCount,
                 RelayLimits.MaxDeliveryAttempts,
-                delivery.NextAttemptAtUtc))
+                item.Delivery.NextAttemptAtUtc))
             .Take(boundedLimit)
             .ToListAsync(cancellationToken);
 
         return Results.Ok(deliveries);
+    }
+
+    private static Dictionary<string, string[]> ValidateDeliveryFilters(
+        string? state,
+        Guid? endpointId,
+        string? eventType,
+        out DeliveryState? stateFilter,
+        out string? normalizedEventType)
+    {
+        var errors = new Dictionary<string, string[]>();
+        stateFilter = null;
+        normalizedEventType = string.IsNullOrWhiteSpace(eventType)
+            ? null
+            : eventType.Trim();
+
+        if (!string.IsNullOrWhiteSpace(state))
+        {
+            var normalizedState = state.Trim();
+            if (!Enum.TryParse<DeliveryState>(normalizedState, true, out var parsedState)
+                || !string.Equals(
+                    parsedState.ToString(),
+                    normalizedState,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                errors["state"] =
+                    [$"State must be one of: {string.Join(", ", Enum.GetNames<DeliveryState>())}."];
+            }
+            else
+            {
+                stateFilter = parsedState;
+            }
+        }
+
+        if (endpointId == Guid.Empty)
+        {
+            errors["endpointId"] = ["Endpoint ID must be a non-empty UUID."];
+        }
+
+        if (normalizedEventType is not null
+            && (normalizedEventType.Length > RelayLimits.EventTypeLength
+                || !normalizedEventType.All(character =>
+                    char.IsAsciiLetterOrDigit(character)
+                    || character is '-' or '_' or '.')))
+        {
+            errors["eventType"] =
+                [$"Event type must contain up to {RelayLimits.EventTypeLength} letters, numbers, dots, dashes, or underscores."];
+        }
+
+        return errors;
     }
 
     private static async Task<IResult> ReplayDeliveryAsync(

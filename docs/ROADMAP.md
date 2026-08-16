@@ -9,11 +9,11 @@
 - Idempotent manual replay for failed deliveries.
 - Configurable receiver simulator (success, retry-then-succeed, fail-until-replay, always-fail).
 - Operations dashboard with live polling and replay controls.
+- Server-side delivery-history filtering by state, endpoint, and event type.
 - xUnit unit tests, Testcontainers integration tests, Vitest, and Playwright workflows for success, retry, and replay.
 
 ## Next candidates
 
-- Delivery filtering by state, endpoint, and event type.
 - Endpoint disable and reactivate controls.
 - Pagination and cursor-based history navigation.
 - Delivery retention policy and scheduled cleanup.

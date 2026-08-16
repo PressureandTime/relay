@@ -10,6 +10,7 @@
 | Automatic retries | ✓ | Exponential 1 s, 2 s, and 4 s backoff; 4 attempts max; retryable classification |
 | Stale-claim recovery | ✓ | 30-second lease, expired claims re-queue |
 | Manual replay | ✓ | Idempotent, new envelope and correlation, lineage tracking |
+| Delivery filtering | ✓ | Exact state, endpoint, and event-type filters; combined server-side |
 | Receiver simulator | ✓ | success, retryThenSucceed, failUntilReplay, alwaysFail |
 | Dashboard | ✓ | Live polling, replay UI, accessible, responsive |
 
@@ -18,9 +19,9 @@
 | Suite | Tests | Tooling |
 |-------|-------|---------|
 | .NET unit | 25 | xUnit |
-| .NET integration | 21 | Testcontainers + PostgreSQL 18 |
-| Frontend unit | 6 | Vitest |
-| E2E | 3 workflows: success, retry, replay | Playwright + Chromium |
+| .NET integration | 25 | Testcontainers + PostgreSQL 18 |
+| Frontend unit | 9 | Vitest |
+| E2E | 3 workflows: success and filtering, retry, replay | Playwright + Chromium |
 
 ## Known issues
 
@@ -38,7 +39,7 @@
 ## Verified locally
 
 - .NET Release build: 0 warnings, 0 errors.
-- xUnit: 25 unit tests and 21 PostgreSQL integration tests passed.
-- Frontend: clean `npm ci`, ESLint, TypeScript, 6 Vitest tests, and the Next.js production build passed. A separate Linux container clean install and Vitest run also passed.
+- xUnit: 25 unit tests and 25 PostgreSQL integration tests passed.
+- Frontend: clean `npm ci`, ESLint, TypeScript, 9 Vitest tests, and the Next.js production build passed. A separate Linux container clean install and Vitest run also passed before the filtering slice.
 - Docker Compose: npm 11.16 clean install and all images built; migration exited 0; API, worker, receiver, PostgreSQL, and dashboard became healthy.
-- Playwright: 3 Chromium workflows passed.
+- Playwright: 3 Chromium workflows passed, including combined state, endpoint, and event-type filtering and reset.

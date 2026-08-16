@@ -51,6 +51,7 @@ describe("dashboard API contract normalization", () => {
         id: "019fbf1d-6c8b-77de-8608-ef64120636d7",
         eventId: "019fbf1d-6c8b-77de-8608-ef64120636d6",
         endpointId: "019fbf1d-6c8b-77de-8608-ef64120636d5",
+        endpointName: "Synthetic receiver",
         eventType: "file.processed",
         state: "Succeeded",
         correlationId: "synthetic-correlation",
@@ -75,6 +76,7 @@ describe("dashboard API contract normalization", () => {
       }),
     ).toMatchObject({
       id: "019fbf1d-6c8b-77de-8608-ef64120636d7",
+      endpointName: "Synthetic receiver",
       state: "Succeeded",
       completedAtUtc: "2026-08-01T20:57:02Z",
       attemptCount: 1,

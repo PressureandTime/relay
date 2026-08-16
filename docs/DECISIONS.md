@@ -79,3 +79,11 @@ The one-delivery-per-event uniqueness constraint is replaced by a non-unique ind
 Status: accepted
 
 CI uses Ubuntu jobs: frontend checks, Release build and unit tests, Docker-backed integration tests, and Compose-backed Playwright workflows. Official GitHub Actions are pinned to reviewed commit SHAs and the workflow has only `contents: read` permission. CI does not publish packages, images, or deployments.
+
+## 013 — Exact delivery-history filters
+
+Status: accepted
+
+`GET /api/deliveries` accepts optional `state`, `endpointId`, and `eventType` query parameters. Each filter is an exact match, multiple filters are combined with AND, and the existing bounded limit is applied after filtering. State matching is case-insensitive at the HTTP boundary and event-type matching remains case-sensitive, consistent with event creation and storage. Invalid state or event-type values return a validation response instead of an empty result.
+
+The dashboard keeps draft filter values separate from applied filters. Apply performs one request, Reset restores the unfiltered history, and automatic refreshes reuse the applied filters. Filtering remains server-side so the result is correct before the 20-row dashboard limit is applied.

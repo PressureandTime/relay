@@ -18,6 +18,7 @@ export interface DeliverySummary {
   id: string;
   eventId?: string;
   endpointId?: string;
+  endpointName?: string;
   eventType?: string;
   state: string;
   correlationId?: string;
@@ -184,6 +185,7 @@ export function normalizeDeliverySummary(
     id,
     eventId: stringValue(record, "eventId"),
     endpointId: stringValue(record, "endpointId"),
+    endpointName: stringValue(record, "endpointName"),
     eventType: stringValue(record, "eventType", "type"),
     state: stringValue(record, "state", "status") ?? "Unknown",
     correlationId: stringValue(record, "correlationId"),

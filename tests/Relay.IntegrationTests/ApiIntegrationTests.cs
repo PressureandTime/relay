@@ -400,6 +400,64 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         Assert.Equal(204, attemptElement.GetProperty("httpStatusCode").GetInt32());
     }
 
+    [Fact]
+    public async Task DeliveryHistoryFiltersByStateEndpointAndEventType()
+    {
+        var firstEndpoint = await CreateEndpointAsync();
+        var secondEndpoint = await CreateEndpointAsync();
+        var failed = await SubmitEventAsync(
+            firstEndpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}",
+            "demo.failed");
+        var wrongState = await SubmitEventAsync(
+            firstEndpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}",
+            "demo.failed");
+        var wrongEndpoint = await SubmitEventAsync(
+            secondEndpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}",
+            "demo.failed");
+        var wrongEventType = await SubmitEventAsync(
+            firstEndpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}",
+            "demo.other");
+        await MarkDeliveryFailedAsync(failed.DeliveryId!.Value);
+        await MarkDeliveryFailedAsync(wrongEndpoint.DeliveryId!.Value);
+        await MarkDeliveryFailedAsync(wrongEventType.DeliveryId!.Value);
+
+        Assert.NotNull(wrongState.DeliveryId);
+
+        using var response = await _client.GetAsync(
+            $"/api/deliveries?state=failed&endpointId={firstEndpoint.Id:D}&eventType=demo.failed&limit=20");
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var item = Assert.Single(document.RootElement.EnumerateArray());
+        Assert.Equal(failed.DeliveryId, item.GetProperty("id").GetGuid());
+        Assert.Equal(firstEndpoint.Id, item.GetProperty("endpointId").GetGuid());
+        Assert.Equal("demo.failed", item.GetProperty("eventType").GetString());
+        Assert.Equal("Failed", item.GetProperty("state").GetString());
+    }
+
+    [Theory]
+    [InlineData("state=not-a-state", "state")]
+    [InlineData("endpointId=00000000-0000-0000-0000-000000000000", "endpointId")]
+    [InlineData("eventType=invalid%20type", "eventType")]
+    public async Task DeliveryHistoryRejectsInvalidFilters(
+        string query,
+        string expectedField)
+    {
+        using var response = await _client.GetAsync($"/api/deliveries?{query}");
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(document.RootElement.GetProperty("errors").TryGetProperty(expectedField, out _));
+    }
+
     private async Task<CreatedEndpoint> CreateEndpointAsync()
     {
         var receiverId = Guid.NewGuid();
@@ -427,14 +485,15 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
     private async Task<EventSubmission> SubmitEventAsync(
         Guid endpointId,
         string idempotencyKey,
-        string payloadValue)
+        string payloadValue,
+        string eventType = "demo.created")
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/events")
         {
             Content = JsonContent.Create(new
             {
                 endpointId,
-                type = "demo.created",
+                type = eventType,
                 payload = new
                 {
                     value = payloadValue,

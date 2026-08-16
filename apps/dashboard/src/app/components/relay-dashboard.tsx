@@ -24,6 +24,15 @@ import {
   type ReplayIntent,
   resolveReplayIntent,
 } from "@/lib/replay-intent";
+import {
+  DELIVERY_STATES,
+  EMPTY_DELIVERY_FILTERS,
+  type DeliveryFilters,
+  deliveryHistoryPath,
+  deliveryMatchesFilters,
+  hasDeliveryFilters,
+  normalizeDeliveryFilters,
+} from "@/lib/delivery-filters";
 
 const POLL_INTERVAL_MS = 1_000;
 const MAX_POLL_ATTEMPTS = 30;
@@ -105,6 +114,10 @@ function isTerminal(state: string): boolean {
   return TERMINAL_STATES.has(state.toLowerCase());
 }
 
+function historyLoadedMessage(count: number, filtered: boolean): string {
+  return `${count} ${filtered ? "matching " : "recent "}${count === 1 ? "delivery" : "deliveries"} loaded.`;
+}
+
 async function requestJson<T>(
   input: string,
   init?: RequestInit,
@@ -179,6 +192,10 @@ export function RelayDashboard({
   const [eventPayload, setEventPayload] = useState(DEFAULT_PAYLOAD);
   const [eventStatus, setEventStatus] = useState<RequestStatus>(idleEvent);
   const [deliveries, setDeliveries] = useState(initialDeliveries);
+  const [deliveryFilterDraft, setDeliveryFilterDraft] =
+    useState<DeliveryFilters>(() => ({ ...EMPTY_DELIVERY_FILTERS }));
+  const [appliedDeliveryFilters, setAppliedDeliveryFilters] =
+    useState<DeliveryFilters>(() => ({ ...EMPTY_DELIVERY_FILTERS }));
   const [historyStatus, setHistoryStatus] = useState<RequestStatus>(() => {
     if (initialDeliveryError) {
       return { phase: "error", message: initialDeliveryError };
@@ -188,7 +205,7 @@ export function RelayDashboard({
     }
     return {
       phase: "success",
-      message: `${initialDeliveries.length} recent deliveries loaded.`,
+      message: historyLoadedMessage(initialDeliveries.length, false),
     };
   });
   const [selectedDeliveryId, setSelectedDeliveryId] = useState("");
@@ -213,24 +230,35 @@ export function RelayDashboard({
   const detailControllerRef = useRef<AbortController | null>(null);
   const replayIntentRef = useRef<ReplayIntent | null>(null);
 
-  const refreshHistory = useCallback(async (signal?: AbortSignal) => {
+  const loadHistory = useCallback(async (
+    filters: DeliveryFilters,
+    signal?: AbortSignal,
+  ) => {
     setHistoryStatus({
       phase: "loading",
-      message: "Refreshing recent deliveries…",
+      message: "Refreshing deliveries…",
     });
 
     try {
-      const body = await requestJson<unknown>("/relay-api/deliveries?limit=20", {
+      const body = await requestJson<unknown>(deliveryHistoryPath(filters), {
         signal,
       });
       const nextDeliveries = normalizeDeliveries(body);
       setDeliveries(nextDeliveries);
       setHistoryStatus(
         nextDeliveries.length === 0
-          ? { phase: "idle", message: "No deliveries have been recorded." }
+          ? {
+              phase: "idle",
+              message: hasDeliveryFilters(filters)
+                ? "No deliveries match the applied filters."
+                : "No deliveries have been recorded.",
+            }
           : {
               phase: "success",
-              message: `${nextDeliveries.length} recent deliveries loaded.`,
+              message: historyLoadedMessage(
+                nextDeliveries.length,
+                hasDeliveryFilters(filters),
+              ),
             },
       );
     } catch (error) {
@@ -246,6 +274,13 @@ export function RelayDashboard({
       });
     }
   }, []);
+
+  const refreshHistory = useCallback(
+    async (signal?: AbortSignal) => {
+      await loadHistory(appliedDeliveryFilters, signal);
+    },
+    [appliedDeliveryFilters, loadHistory],
+  );
 
   useEffect(() => {
     return () => detailControllerRef.current?.abort();
@@ -281,7 +316,9 @@ export function RelayDashboard({
         });
         setDeliveries((current) => {
           const remainder = current.filter((delivery) => delivery.id !== detail.id);
-          return [detail, ...remainder].slice(0, 20);
+          return deliveryMatchesFilters(detail, appliedDeliveryFilters)
+            ? [detail, ...remainder].slice(0, 20)
+            : remainder;
         });
 
         if (isTerminal(detail.state)) {
@@ -294,6 +331,9 @@ export function RelayDashboard({
             `Delivery ${detail.id} finished with state ${detail.state}.`,
           );
           await refreshHistory(controller.signal);
+          setTrackedDeliveryId((current) =>
+            current === detail.id ? "" : current,
+          );
           return;
         }
 
@@ -311,6 +351,9 @@ export function RelayDashboard({
             phase: "error",
             message: "Delivery tracking stopped after 30 checks. Refresh the history to get the latest state.",
           });
+          setTrackedDeliveryId((current) =>
+            current === trackedDeliveryId ? "" : current,
+          );
           return;
         }
 
@@ -325,6 +368,9 @@ export function RelayDashboard({
           phase: "error",
           message: "Delivery tracking stopped after 30 checks. Refresh the history to get the latest state.",
         });
+        setTrackedDeliveryId((current) =>
+          current === trackedDeliveryId ? "" : current,
+        );
         return;
       }
 
@@ -339,7 +385,22 @@ export function RelayDashboard({
         clearTimeout(timer);
       }
     };
-  }, [refreshHistory, trackedDeliveryId]);
+  }, [appliedDeliveryFilters, refreshHistory, trackedDeliveryId]);
+
+  async function applyDeliveryFilters(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const filters = normalizeDeliveryFilters(deliveryFilterDraft);
+    setDeliveryFilterDraft(filters);
+    setAppliedDeliveryFilters(filters);
+    await loadHistory(filters);
+  }
+
+  async function resetDeliveryFilters() {
+    const filters = { ...EMPTY_DELIVERY_FILTERS };
+    setDeliveryFilterDraft(filters);
+    setAppliedDeliveryFilters(filters);
+    await loadHistory(filters);
+  }
 
   async function prepareReceiver(event?: FormEvent<HTMLFormElement>) {
     if (event) event.preventDefault();
@@ -499,17 +560,23 @@ export function RelayDashboard({
         throw new Error("Event response was missing required fields.");
       }
 
-      setDeliveries((current) => [
-        {
-          id: body.deliveryId,
-          eventId: body.eventId,
-          endpointId: selectedEndpointId,
-          eventType: type,
-          state: body.state,
-          correlationId: body.correlationId,
-        },
-        ...current.filter((delivery) => delivery.id !== body.deliveryId),
-      ]);
+      const acceptedDelivery: DeliverySummary = {
+        id: body.deliveryId,
+        eventId: body.eventId,
+        endpointId: selectedEndpointId,
+        endpointName: selectedEndpoint?.name,
+        eventType: type,
+        state: body.state,
+        correlationId: body.correlationId,
+      };
+      setDeliveries((current) =>
+        deliveryMatchesFilters(acceptedDelivery, appliedDeliveryFilters)
+          ? [
+              acceptedDelivery,
+              ...current.filter((delivery) => delivery.id !== body.deliveryId),
+            ].slice(0, 20)
+          : current,
+      );
       setSelectedDeliveryId(body.deliveryId);
       setDeliveryDetail(null);
       setDetailStatus({
@@ -846,7 +913,7 @@ export function RelayDashboard({
                 </button>
               </form>
               <StatusMessage status={eventStatus} />
-              {trackedDeliveryId ? (
+              {pollStatus.phase !== "idle" ? (
                 <StatusMessage status={pollStatus} announce={false} />
               ) : null}
             </li>
@@ -894,6 +961,91 @@ export function RelayDashboard({
                 {historyStatus.phase === "loading" ? "Refreshing…" : "Refresh"}
               </button>
             </div>
+            <form
+              className="deliveryFilters"
+              aria-label="Delivery filters"
+              onSubmit={(event) => void applyDeliveryFilters(event)}
+            >
+              <div className="field field--compact">
+                <label htmlFor="delivery-state-filter">Delivery state</label>
+                <select
+                  id="delivery-state-filter"
+                  value={deliveryFilterDraft.state}
+                  onChange={(event) =>
+                    setDeliveryFilterDraft((current) => ({
+                      ...current,
+                      state: event.target.value,
+                    }))
+                  }
+                  disabled={historyStatus.phase === "loading"}
+                >
+                  <option value="">All states</option>
+                  {DELIVERY_STATES.map((state) => (
+                    <option key={state} value={state}>
+                      {state}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field field--compact">
+                <label htmlFor="delivery-endpoint-filter">Delivery endpoint</label>
+                <select
+                  id="delivery-endpoint-filter"
+                  value={deliveryFilterDraft.endpointId}
+                  onChange={(event) =>
+                    setDeliveryFilterDraft((current) => ({
+                      ...current,
+                      endpointId: event.target.value,
+                    }))
+                  }
+                  disabled={historyStatus.phase === "loading"}
+                >
+                  <option value="">All endpoints</option>
+                  {endpoints.map((endpoint) => (
+                    <option key={endpoint.id} value={endpoint.id}>
+                      {endpoint.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field field--compact field--wide">
+                <label htmlFor="delivery-event-filter">Delivery event type</label>
+                <input
+                  id="delivery-event-filter"
+                  value={deliveryFilterDraft.eventType}
+                  onChange={(event) =>
+                    setDeliveryFilterDraft((current) => ({
+                      ...current,
+                      eventType: event.target.value,
+                    }))
+                  }
+                  maxLength={100}
+                  placeholder="file.processed"
+                  disabled={historyStatus.phase === "loading"}
+                />
+              </div>
+              <div className="filterActions">
+                <button
+                  className="button button--secondary button--small"
+                  type="submit"
+                  disabled={historyStatus.phase === "loading"}
+                >
+                  Apply filters
+                </button>
+                <button
+                  className="button button--secondary button--small"
+                  type="button"
+                  onClick={() => void resetDeliveryFilters()}
+                  disabled={
+                    historyStatus.phase === "loading"
+                    || (!hasDeliveryFilters(deliveryFilterDraft)
+                      && !hasDeliveryFilters(appliedDeliveryFilters))
+                  }
+                >
+                  Reset
+                </button>
+              </div>
+            </form>
             <StatusMessage status={historyStatus} />
             {deliveries.length > 0 ? (
               <ul className="deliveryList">
@@ -908,6 +1060,9 @@ export function RelayDashboard({
                       <span className="deliveryButton__topline">
                         <strong>{delivery.eventType ?? "Synthetic event"}</strong>
                         <StateBadge state={delivery.state} />
+                      </span>
+                      <span className="deliveryButton__endpoint">
+                        {delivery.endpointName ?? "Endpoint unavailable"}
                       </span>
                       <code>{delivery.id}</code>
                       <span>

@@ -20,7 +20,9 @@ async function registerReceiver(
 }
 
 async function submitEvent(page: Page, eventType: string) {
-  await page.getByRole("textbox", { name: "Event type" }).fill(eventType);
+  await page
+    .getByRole("textbox", { name: "Event type", exact: true })
+    .fill(eventType);
   await page.getByRole("textbox", { name: "JSON payload" }).fill(
     JSON.stringify(
       {
