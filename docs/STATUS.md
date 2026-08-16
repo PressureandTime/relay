@@ -33,7 +33,7 @@
 - Vite 8.0.16 resolves PostCSS 8.5.18, Lightning CSS 1.32.0, and Rolldown 1.0.3. Its previous esbuild dependency and advisory are no longer present.
 - Vitest 4.1.1 supports Vite 8. Cross-platform Next SWC, Lightning CSS, and Rolldown native tarballs are pinned because registry metadata lags their published releases.
 - Incompatible PostCSS and Sharp overrides are not used.
-- The NuGet vulnerability check reports no vulnerable packages for the solution.
+- SSH.NET is transitively pinned to 2026.0.0 because Testcontainers otherwise resolves the vulnerable 2025.1.0 release. The NuGet vulnerability check reports no vulnerable packages for the solution.
 - Playwright is pinned to 1.58.2.
 
 ## Verified locally

@@ -34,7 +34,7 @@ The browser communicates through fixed Next.js rewrites to internal API and rece
 
 Status: accepted
 
-Live package registries and vulnerability feeds determine exact versions. npm pins specific tarballs for Next.js, Vitest, Vite, and their cross-platform native packages where registry metadata lagged behind published releases. The lockfile retains every supported Next SWC, Lightning CSS, and Rolldown platform so clean Linux builds do not invoke lockfile repair or miss a native test runner. NuGet pins `Microsoft.OpenApi` to 2.11.0 to resolve a transitive advisory. Lockfiles record the complete integrity-checked graph.
+Live package registries and vulnerability feeds determine exact versions. npm pins specific tarballs for Next.js, Vitest, Vite, and their cross-platform native packages where registry metadata lagged behind published releases. The lockfile retains every supported Next SWC, Lightning CSS, and Rolldown platform so clean Linux builds do not invoke lockfile repair or miss a native test runner. NuGet pins `Microsoft.OpenApi` to 2.11.0 and SSH.NET to 2026.0.0 to resolve transitive advisories. Lockfiles record the complete integrity-checked graph.
 
 npm currently reports high-severity advisories for PostCSS and Sharp required by Next.js with no compatible fix available. Relay does not accept CSS input and does not use Next.js image processing. Unsupported dependency overrides are not used; the constraint is reviewed when upstream releases are available.
 
