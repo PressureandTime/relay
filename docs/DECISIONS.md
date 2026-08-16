@@ -36,7 +36,7 @@ Status: accepted
 
 Live package registries and vulnerability feeds determine exact versions. npm pins specific tarballs for Next.js, Vitest, Vite, and their cross-platform native packages where registry metadata lagged behind published releases. The lockfile retains every supported Next SWC, Lightning CSS, and Rolldown platform so clean Linux builds do not invoke lockfile repair or miss a native test runner. NuGet pins `Microsoft.OpenApi` to 2.11.0 and SSH.NET to 2026.0.0 to resolve transitive advisories. Lockfiles record the complete integrity-checked graph.
 
-npm currently reports high-severity advisories for PostCSS and Sharp required by Next.js with no compatible fix available. Relay does not accept CSS input and does not use Next.js image processing. Unsupported dependency overrides are not used; the constraint is reviewed when upstream releases are available.
+npm currently reports high-severity advisories in development tooling and the Next.js dependency tree. PostCSS and Sharp have no compatible fix in the pinned stack. Relay does not accept CSS input or use Next.js image processing. Unsupported dependency overrides are not used; the constraint is reviewed when compatible upstream releases are available.
 
 ## 007 — Preserve delivery envelopes as text
 
@@ -87,3 +87,11 @@ Status: accepted
 `GET /api/deliveries` accepts optional `state`, `endpointId`, and `eventType` query parameters. Each filter is an exact match, multiple filters are combined with AND, and the existing bounded limit is applied after filtering. State matching is case-insensitive at the HTTP boundary and event-type matching remains case-sensitive, consistent with event creation and storage. Invalid state or event-type values return a validation response instead of an empty result.
 
 The dashboard keeps draft filter values separate from applied filters. Apply performs one request, Reset restores the unfiltered history, and automatic refreshes reuse the applied filters. Filtering remains server-side so the result is correct before the 20-row dashboard limit is applied.
+
+## 014 — Reversible endpoint lifecycle
+
+Status: accepted
+
+Webhook endpoints have an explicit `Active` or `Disabled` state. New endpoints are active. Disable and reactivate operations are idempotent, return the current endpoint representation, and do not delete endpoint or delivery history.
+
+A disabled endpoint rejects new event submissions and new manual replays with `409 Conflict`. An identical event or replay request that already succeeded idempotently still returns its original accepted response, even if the endpoint was disabled later. Deliveries that were queued or retry-scheduled before disablement continue through the existing worker pipeline; disabling an endpoint is an intake control, not a cancellation mechanism.

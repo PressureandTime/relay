@@ -4,7 +4,7 @@ async function registerReceiver(
   page: Page,
   behavior: "retryThenSucceed" | "failUntilReplay",
   endpointName: string,
-) {
+): Promise<string> {
   await page.goto("/");
   await page.getByRole("combobox", { name: "Receiver behavior" }).selectOption(behavior);
   await page.getByRole("button", { name: "Prepare receiver" }).click();
@@ -13,10 +13,18 @@ async function registerReceiver(
   ).toBeVisible();
 
   await page.getByRole("textbox", { name: "Endpoint name" }).fill(endpointName);
+  const registrationResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/relay-api/endpoints"
+  );
   await page.getByRole("button", { name: "Register endpoint" }).click();
+  const registrationResponse = await registrationResponsePromise;
+  expect(registrationResponse.status()).toBe(201);
   await expect(
     page.getByText(new RegExp(`Endpoint .${endpointName}. registered`)),
   ).toBeVisible();
+  const endpoint = await registrationResponse.json() as { id: string };
+  return endpoint.id;
 }
 
 async function submitEvent(page: Page, eventType: string) {
@@ -58,11 +66,25 @@ test("retries a delivery twice before succeeding", async ({ page }) => {
 
 test("replays a failed delivery and shows its lineage", async ({ page }) => {
   const suffix = crypto.randomUUID().slice(0, 8);
-  await registerReceiver(page, "failUntilReplay", `Replay receiver ${suffix}`);
+  const endpointName = `Replay receiver ${suffix}`;
+  const endpointId = await registerReceiver(page, "failUntilReplay", endpointName);
   await submitEvent(page, `relay.replay.${suffix}`);
 
   await expect(page.getByText(/Delivery .* failed\./)).toBeVisible();
   await expect(attemptCard(page, 4).getByText("503", { exact: true })).toBeVisible();
+
+  const endpointRecord = page.getByRole("listitem").filter({ hasText: endpointId });
+  await endpointRecord.getByRole("button", {
+    name: `Disable endpoint ${endpointName}`,
+  }).click();
+  await expect(page.getByRole("button", { name: "Replay delivery" })).toBeDisabled();
+  await expect(
+    page.getByText("Reactivate the endpoint before scheduling a replay."),
+  ).toBeVisible();
+  await endpointRecord.getByRole("button", {
+    name: `Reactivate endpoint ${endpointName}`,
+  }).click();
+  await expect(page.getByRole("button", { name: "Replay delivery" })).toBeEnabled();
 
   const replayResponsePromise = page.waitForResponse(
     (response) =>

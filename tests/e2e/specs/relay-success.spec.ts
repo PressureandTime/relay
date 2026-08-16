@@ -39,8 +39,15 @@ test("registers an endpoint, delivers an event, and restores its status", async 
   const registerButton = page.getByRole("button", {
     name: "Register endpoint",
   });
+  const registrationResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname === "/relay-api/endpoints"
+  );
   await registerButton.focus();
   await page.keyboard.press("Enter");
+  const registrationResponse = await registrationResponsePromise;
+  expect(registrationResponse.status()).toBe(201);
+  const registeredEndpoint = await registrationResponse.json() as { id: string };
   await expect(
     page.getByText(new RegExp(`Endpoint .${endpointName}. registered`)),
   ).toBeVisible();
@@ -48,6 +55,40 @@ test("registers an endpoint, delivers an event, and restores its status", async 
   await expect(page.getByRole("combobox", { name: "Endpoint", exact: true })).toHaveValue(
     /.+/,
   );
+
+  const endpointRecord = page
+    .getByRole("listitem")
+    .filter({ hasText: registeredEndpoint.id });
+  await expect(endpointRecord.getByText("Active", { exact: true })).toBeVisible();
+  const disableResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname
+        === `/relay-api/endpoints/${registeredEndpoint.id}/disable`
+  );
+  await endpointRecord.getByRole("button", {
+    name: `Disable endpoint ${endpointName}`,
+  }).click();
+  expect((await disableResponsePromise).status()).toBe(200);
+  await expect(endpointRecord.getByText("Disabled", { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("combobox", { name: "Endpoint", exact: true })
+      .locator(`option[value="${registeredEndpoint.id}"]`),
+  ).toHaveCount(0);
+
+  const reactivateResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+      && new URL(response.url()).pathname
+        === `/relay-api/endpoints/${registeredEndpoint.id}/reactivate`
+  );
+  await endpointRecord.getByRole("button", {
+    name: `Reactivate endpoint ${endpointName}`,
+  }).click();
+  expect((await reactivateResponsePromise).status()).toBe(200);
+  await expect(endpointRecord.getByText("Active", { exact: true })).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Endpoint", exact: true })
+    .selectOption(registeredEndpoint.id);
 
   await page
     .getByRole("textbox", { name: "Event type", exact: true })

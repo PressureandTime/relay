@@ -61,7 +61,7 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         var pendingMigrations = (await database.Database.GetPendingMigrationsAsync()).ToArray();
 
         Assert.Equal(0, _database.AppliedMigrationCountBeforeMigration);
-        Assert.Equal(4, _database.AvailableMigrationCount);
+        Assert.Equal(5, _database.AvailableMigrationCount);
         Assert.Equal(
             _database.AvailableMigrationCount,
             _database.AppliedMigrationCountAfterMigration);
@@ -128,6 +128,8 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
 
         var delivery = await database.Deliveries.AsNoTracking().SingleAsync();
         var attempt = await database.DeliveryAttempts.AsNoTracking().SingleAsync();
+        var endpoint = await database.WebhookEndpoints.AsNoTracking().SingleAsync();
+        Assert.Equal(EndpointState.Active, endpoint.State);
         Assert.Equal(1, delivery.AttemptCount);
         Assert.Equal(DeliveryState.Failed, delivery.State);
         Assert.Null(delivery.ClaimToken);
@@ -147,7 +149,7 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         Assert.False(endpoint.RawResponse.Contains(endpoint.SigningSecret, StringComparison.Ordinal));
         Assert.False(endpoint.RawResponse.Contains("secret", StringComparison.OrdinalIgnoreCase));
         Assert.Equal(
-            ["createdAtUtc", "id", "name", "url"],
+            ["createdAtUtc", "id", "name", "state", "url"],
             GetPropertyNames(endpoint.RawResponse));
 
         await using (var database = _database.CreateDbContext())
@@ -176,12 +178,94 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         var listedEndpoint = Assert.Single(listDocument.RootElement.EnumerateArray());
         Assert.Equal(endpoint.Id, listedEndpoint.GetProperty("id").GetGuid());
         Assert.Equal(endpoint.Url, listedEndpoint.GetProperty("url").GetString());
+        Assert.Equal("Active", listedEndpoint.GetProperty("state").GetString());
         Assert.Equal(
-            ["createdAtUtc", "id", "name", "url"],
+            ["createdAtUtc", "id", "name", "state", "url"],
             listedEndpoint.EnumerateObject()
                 .Select(property => property.Name)
                 .Order(StringComparer.Ordinal)
                 .ToArray());
+    }
+
+    [Fact]
+    public async Task EndpointCanBeDisabledAndReactivatedIdempotently()
+    {
+        var endpoint = await CreateEndpointAsync();
+
+        var firstDisable = await SetEndpointStateAsync(endpoint.Id, "disable");
+        var secondDisable = await SetEndpointStateAsync(endpoint.Id, "disable");
+        var firstReactivate = await SetEndpointStateAsync(endpoint.Id, "reactivate");
+        var secondReactivate = await SetEndpointStateAsync(endpoint.Id, "reactivate");
+        var missing = await SetEndpointStateAsync(Guid.NewGuid(), "disable");
+
+        Assert.Equal(HttpStatusCode.OK, firstDisable.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondDisable.StatusCode);
+        Assert.Equal("Disabled", firstDisable.State);
+        Assert.Equal("Disabled", secondDisable.State);
+        Assert.Equal(HttpStatusCode.OK, firstReactivate.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondReactivate.StatusCode);
+        Assert.Equal("Active", firstReactivate.State);
+        Assert.Equal("Active", secondReactivate.State);
+        Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+
+        await using var database = _database.CreateDbContext();
+        var storedEndpoint = await database.WebhookEndpoints.AsNoTracking().SingleAsync();
+        Assert.Equal(EndpointState.Active, storedEndpoint.State);
+    }
+
+    [Fact]
+    public async Task DisabledEndpointRejectsNewEventsButPreservesIdempotentResult()
+    {
+        var endpoint = await CreateEndpointAsync();
+        var idempotencyKey = $"event:{Guid.NewGuid():N}";
+        var payload = $"payload-{Guid.NewGuid():N}";
+        var accepted = await SubmitEventAsync(endpoint.Id, idempotencyKey, payload);
+        await SetEndpointStateAsync(endpoint.Id, "disable");
+
+        var repeated = await SubmitEventAsync(endpoint.Id, idempotencyKey, payload);
+        var rejected = await SubmitEventAsync(
+            endpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}");
+
+        Assert.Equal(HttpStatusCode.Accepted, repeated.StatusCode);
+        Assert.True(repeated.Replayed);
+        Assert.Equal(accepted.EventId, repeated.EventId);
+        Assert.Equal(accepted.DeliveryId, repeated.DeliveryId);
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Contains("Webhook endpoint is disabled.", rejected.RawResponse, StringComparison.Ordinal);
+
+        await using var database = _database.CreateDbContext();
+        Assert.Equal(1, await database.WebhookEvents.CountAsync());
+        Assert.Equal(1, await database.Deliveries.CountAsync());
+    }
+
+    [Fact]
+    public async Task DisabledEndpointRejectsNewReplaysButPreservesIdempotentResult()
+    {
+        var endpoint = await CreateEndpointAsync();
+        var original = await SubmitEventAsync(
+            endpoint.Id,
+            $"event:{Guid.NewGuid():N}",
+            $"payload-{Guid.NewGuid():N}");
+        await MarkDeliveryFailedAsync(original.DeliveryId!.Value);
+        var idempotencyKey = $"replay:{Guid.NewGuid():N}";
+        var accepted = await ReplayDeliveryAsync(original.DeliveryId.Value, idempotencyKey);
+        await SetEndpointStateAsync(endpoint.Id, "disable");
+
+        var repeated = await ReplayDeliveryAsync(original.DeliveryId.Value, idempotencyKey);
+        var rejected = await ReplayDeliveryAsync(
+            original.DeliveryId.Value,
+            $"replay:{Guid.NewGuid():N}");
+
+        Assert.Equal(HttpStatusCode.Accepted, repeated.StatusCode);
+        Assert.True(repeated.Replayed);
+        Assert.Equal(accepted.DeliveryId, repeated.DeliveryId);
+        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Contains("Webhook endpoint is disabled.", rejected.RawResponse, StringComparison.Ordinal);
+
+        await using var database = _database.CreateDbContext();
+        Assert.Equal(2, await database.Deliveries.CountAsync());
     }
 
     [Fact]
@@ -531,6 +615,26 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
             rawResponse);
     }
 
+    private async Task<EndpointStateSubmission> SetEndpointStateAsync(
+        Guid endpointId,
+        string action)
+    {
+        using var response = await _client.PostAsync(
+            $"/api/endpoints/{endpointId:D}/{action}",
+            content: null);
+        var rawResponse = await response.Content.ReadAsStringAsync();
+        if (response.StatusCode is not HttpStatusCode.OK)
+        {
+            return new EndpointStateSubmission(response.StatusCode, null, rawResponse);
+        }
+
+        using var document = JsonDocument.Parse(rawResponse);
+        return new EndpointStateSubmission(
+            response.StatusCode,
+            document.RootElement.GetProperty("state").GetString(),
+            rawResponse);
+    }
+
     private async Task MarkDeliveryFailedAsync(Guid deliveryId)
     {
         await using var database = _database.CreateDbContext();
@@ -641,6 +745,11 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         string? State,
         string? CorrelationId,
         bool Replayed,
+        string RawResponse);
+
+    private sealed record EndpointStateSubmission(
+        HttpStatusCode StatusCode,
+        string? State,
         string RawResponse);
 
     private sealed record ReplaySubmission(

@@ -12,6 +12,7 @@ public sealed record EndpointResponse(
     Guid Id,
     string Name,
     string Url,
+    EndpointState State,
     DateTimeOffset CreatedAtUtc);
 
 public sealed record CreateEventRequest(

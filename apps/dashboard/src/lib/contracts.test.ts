@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   apiErrorMessage,
+  isEndpointActive,
   normalizeDeliveries,
   normalizeDeliveryDetail,
   normalizeEndpoint,
@@ -13,6 +14,7 @@ describe("dashboard API contract normalization", () => {
         id: "019fbf1d-493a-7d4d-ac06-02fbed992609",
         name: "Synthetic receiver",
         url: "http://receiver:8080/webhooks/019fbf1d-493a-7d4d-ac06-02fbed992608",
+        state: "Disabled",
         createdAtUtc: "2026-08-01T20:57:00Z",
         signingSecret: "must-not-be-mapped",
       }),
@@ -20,8 +22,21 @@ describe("dashboard API contract normalization", () => {
       id: "019fbf1d-493a-7d4d-ac06-02fbed992609",
       name: "Synthetic receiver",
       url: "http://receiver:8080/webhooks/019fbf1d-493a-7d4d-ac06-02fbed992608",
+      state: "Disabled",
       createdAtUtc: "2026-08-01T20:57:00Z",
     });
+  });
+
+  it("treats legacy endpoint responses as active", () => {
+    const endpoint = normalizeEndpoint({
+        id: "019fbf1d-493a-7d4d-ac06-02fbed992609",
+        name: "Synthetic receiver",
+        url: "http://receiver:8080/webhooks/019fbf1d-493a-7d4d-ac06-02fbed992608",
+      });
+
+    expect(endpoint).toMatchObject({ state: "Active" });
+    expect(isEndpointActive(endpoint!)).toBe(true);
+    expect(isEndpointActive({ ...endpoint!, state: "Disabled" })).toBe(false);
   });
 
   it("drops malformed endpoint and delivery records", () => {

@@ -173,6 +173,11 @@ namespace Relay.Infrastructure.Migrations
                         .HasMaxLength(4096)
                         .HasColumnType("character varying(4096)");
 
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<string>("TargetUrl")
                         .IsRequired()
                         .HasMaxLength(2048)

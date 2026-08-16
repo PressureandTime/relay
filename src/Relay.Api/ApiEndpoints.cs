@@ -24,6 +24,14 @@ public static class ApiEndpoints
         api.MapGet("/endpoints", GetEndpointsAsync)
             .WithName("GetEndpoints")
             .Produces<IReadOnlyList<EndpointResponse>>();
+        api.MapPost("/endpoints/{endpointId:guid}/disable", DisableEndpointAsync)
+            .WithName("DisableEndpoint")
+            .Produces<EndpointResponse>()
+            .ProducesProblem(StatusCodes.Status404NotFound);
+        api.MapPost("/endpoints/{endpointId:guid}/reactivate", ReactivateEndpointAsync)
+            .WithName("ReactivateEndpoint")
+            .Produces<EndpointResponse>()
+            .ProducesProblem(StatusCodes.Status404NotFound);
         api.MapPost("/events", CreateEventAsync)
             .WithName("CreateEvent")
             .Produces<EventAcceptedResponse>(StatusCodes.Status202Accepted)
@@ -86,10 +94,65 @@ public static class ApiEndpoints
                 endpoint.Id,
                 endpoint.Name,
                 endpoint.TargetUrl,
+                endpoint.State,
                 endpoint.CreatedAtUtc))
             .ToListAsync(cancellationToken);
 
         return Results.Ok(endpoints);
+    }
+
+    private static Task<IResult> DisableEndpointAsync(
+        Guid endpointId,
+        RelayDbContext database,
+        HttpContext context,
+        CancellationToken cancellationToken) =>
+        SetEndpointStateAsync(
+            endpointId,
+            EndpointState.Disabled,
+            database,
+            context,
+            cancellationToken);
+
+    private static Task<IResult> ReactivateEndpointAsync(
+        Guid endpointId,
+        RelayDbContext database,
+        HttpContext context,
+        CancellationToken cancellationToken) =>
+        SetEndpointStateAsync(
+            endpointId,
+            EndpointState.Active,
+            database,
+            context,
+            cancellationToken);
+
+    private static async Task<IResult> SetEndpointStateAsync(
+        Guid endpointId,
+        EndpointState state,
+        RelayDbContext database,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        var endpoint = await database.WebhookEndpoints
+            .SingleOrDefaultAsync(candidate => candidate.Id == endpointId, cancellationToken);
+        if (endpoint is null)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status404NotFound,
+                title: "Webhook endpoint not found.",
+                extensions: ProblemExtensions(context));
+        }
+
+        if (state == EndpointState.Disabled)
+        {
+            endpoint.Disable();
+        }
+        else
+        {
+            endpoint.Reactivate();
+        }
+
+        await database.SaveChangesAsync(cancellationToken);
+        return Results.Ok(ToEndpointResponse(endpoint));
     }
 
     private static async Task<IResult> CreateEventAsync(
@@ -125,15 +188,22 @@ public static class ApiEndpoints
             return BuildIdempotencyResult(context, existing, fingerprint);
         }
 
-        var endpointExists = await database.WebhookEndpoints
+        var endpoint = await database.WebhookEndpoints
             .AsNoTracking()
-            .AnyAsync(endpoint => endpoint.Id == request.EndpointId, cancellationToken);
-        if (!endpointExists)
+            .Where(candidate => candidate.Id == request.EndpointId)
+            .Select(candidate => new { candidate.State })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (endpoint is null)
         {
             return Results.Problem(
                 statusCode: StatusCodes.Status404NotFound,
                 title: "Webhook endpoint not found.",
                 extensions: ProblemExtensions(context));
+        }
+
+        if (endpoint.State == EndpointState.Disabled)
+        {
+            return EndpointDisabled(context);
         }
 
         var createdAtUtc = timeProvider.GetUtcNow();
@@ -429,6 +499,16 @@ public static class ApiEndpoints
             return BuildReplayResult(context, deliveryId, existingReplay, replayed: true);
         }
 
+        var endpointState = await database.WebhookEndpoints
+            .AsNoTracking()
+            .Where(endpoint => endpoint.Id == originalDelivery.EndpointId)
+            .Select(endpoint => endpoint.State)
+            .SingleAsync(cancellationToken);
+        if (endpointState == EndpointState.Disabled)
+        {
+            return EndpointDisabled(context);
+        }
+
         var originalEvent = await database.WebhookEvents
             .AsNoTracking()
             .SingleAsync(candidate => candidate.Id == originalDelivery.EventId, cancellationToken);
@@ -661,7 +741,14 @@ public static class ApiEndpoints
     }
 
     private static EndpointResponse ToEndpointResponse(WebhookEndpoint endpoint) =>
-        new(endpoint.Id, endpoint.Name, endpoint.TargetUrl, endpoint.CreatedAtUtc);
+        new(endpoint.Id, endpoint.Name, endpoint.TargetUrl, endpoint.State, endpoint.CreatedAtUtc);
+
+    private static IResult EndpointDisabled(HttpContext context) =>
+        Results.Problem(
+            statusCode: StatusCodes.Status409Conflict,
+            title: "Webhook endpoint is disabled.",
+            detail: "Reactivate the endpoint before creating new delivery work.",
+            extensions: ProblemExtensions(context));
 
     private static DeliveryDetailResponse ToDeliveryDetail(
         DeliveryProjection delivery,

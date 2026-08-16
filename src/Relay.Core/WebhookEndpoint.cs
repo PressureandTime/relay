@@ -18,6 +18,7 @@ public sealed class WebhookEndpoint
         TargetUrl = targetUrl;
         ProtectedSigningSecret = protectedSigningSecret;
         CreatedAtUtc = createdAtUtc;
+        State = EndpointState.Active;
     }
 
     public Guid Id { get; private set; }
@@ -29,4 +30,26 @@ public sealed class WebhookEndpoint
     public string ProtectedSigningSecret { get; private set; } = string.Empty;
 
     public DateTimeOffset CreatedAtUtc { get; private set; }
+
+    public EndpointState State { get; private set; }
+
+    public void Disable()
+    {
+        if (State == EndpointState.Disabled)
+        {
+            return;
+        }
+
+        State = EndpointState.Disabled;
+    }
+
+    public void Reactivate()
+    {
+        if (State == EndpointState.Active)
+        {
+            return;
+        }
+
+        State = EndpointState.Active;
+    }
 }

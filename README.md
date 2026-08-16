@@ -1,6 +1,6 @@
 # Relay
 
-Relay is a webhook delivery service that accepts events, signs outbound requests with HMAC-SHA256, delivers them with automatic retries, and records every attempt. A Next.js dashboard shows live delivery state, filtered history, attempt details, and replay controls.
+Relay is a webhook delivery service that accepts events, signs outbound requests with HMAC-SHA256, delivers them with automatic retries, and records every attempt. A Next.js dashboard shows endpoint state, live delivery state, filtered history, attempt details, and replay controls.
 
 The system runs locally through Docker Compose: an ASP.NET Core API, a .NET background worker, a synthetic receiver, PostgreSQL, and the dashboard.
 
@@ -21,7 +21,7 @@ Only the dashboard is published to the host at `127.0.0.1:3000`. The API, worker
 
 ## Delivery flow
 
-1. Register a webhook endpoint with a target URL and signing secret.
+1. Register an active webhook endpoint with a target URL and signing secret. Disable it to stop new events and replays without cancelling work already queued; reactivate it to resume intake.
 2. Submit an event with a JSON payload and idempotency key.
 3. The API creates the event and a queued delivery in one transaction.
 4. The worker claims the delivery, signs the envelope, and sends an HTTP POST.
@@ -75,7 +75,7 @@ docker compose up --build --wait --wait-timeout 180
 npm run test:e2e
 ```
 
-Integration tests start disposable PostgreSQL containers through Testcontainers. Three Playwright tests cover immediate success with delivery filtering, retry-then-success, and failed-delivery replay through the dashboard.
+Integration tests start disposable PostgreSQL containers through Testcontainers. Three Playwright tests cover immediate success with endpoint lifecycle and delivery filtering, retry-then-success, and failed-delivery replay through the dashboard.
 
 ## Security boundary
 
@@ -88,7 +88,6 @@ Integration tests start disposable PostgreSQL containers through Testcontainers.
 
 - Receiver state is in-memory and resets when the container restarts.
 - No pagination or retention policy.
-- No endpoint disable/reactivate controls.
 - No arbitrary webhook destinations, authentication, multitenancy, billing, or cloud deployment.
 
 ## Repository layout

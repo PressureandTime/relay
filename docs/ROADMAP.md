@@ -10,11 +10,11 @@
 - Configurable receiver simulator (success, retry-then-succeed, fail-until-replay, always-fail).
 - Operations dashboard with live polling and replay controls.
 - Server-side delivery-history filtering by state, endpoint, and event type.
+- Reversible endpoint disable/reactivate controls that stop new intake while queued deliveries continue.
 - xUnit unit tests, Testcontainers integration tests, Vitest, and Playwright workflows for success, retry, and replay.
 
 ## Next candidates
 
-- Endpoint disable and reactivate controls.
 - Pagination and cursor-based history navigation.
 - Delivery retention policy and scheduled cleanup.
 - Dashboard dark mode.

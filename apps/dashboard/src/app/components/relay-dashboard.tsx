@@ -16,6 +16,7 @@ import {
   type ReceiverResponse,
   type ReplayAcceptedResponse,
   apiErrorMessage,
+  isEndpointActive,
   normalizeDeliveries,
   normalizeDeliveryDetail,
   normalizeEndpoint,
@@ -94,7 +95,7 @@ function formatUtc(value?: string): string {
 
 function statusTone(state: string): string {
   const normalized = state.toLowerCase();
-  if (normalized === "succeeded") {
+  if (normalized === "succeeded" || normalized === "active") {
     return "success";
   }
   if (normalized === "failed") {
@@ -185,8 +186,11 @@ export function RelayDashboard({
   const [endpointListError, setEndpointListError] = useState(
     initialEndpointError ?? "",
   );
+  const [endpointActionStatus, setEndpointActionStatus] =
+    useState<RequestStatus>({ phase: "idle", message: "" });
+  const [changingEndpointId, setChangingEndpointId] = useState("");
   const [selectedEndpointId, setSelectedEndpointId] = useState(
-    initialEndpoints[0]?.id ?? "",
+    initialEndpoints.find(isEndpointActive)?.id ?? "",
   );
   const [eventType, setEventType] = useState("file.processed");
   const [eventPayload, setEventPayload] = useState(DEFAULT_PAYLOAD);
@@ -505,6 +509,65 @@ export function RelayDashboard({
     }
   }
 
+  async function changeEndpointState(
+    endpoint: Endpoint,
+    action: "disable" | "reactivate",
+  ) {
+    setChangingEndpointId(endpoint.id);
+    setEndpointActionStatus({
+      phase: "loading",
+      message: `${action === "disable" ? "Disabling" : "Reactivating"} endpoint…`,
+    });
+
+    try {
+      const body = await requestJson<unknown>(
+        `/relay-api/endpoints/${encodeURIComponent(endpoint.id)}/${action}`,
+        { method: "POST" },
+      );
+      const updatedEndpoint = normalizeEndpoint(body);
+      if (!updatedEndpoint) {
+        throw new Error("Endpoint response was not in the expected format.");
+      }
+
+      setEndpoints((current) =>
+        current.map((item) =>
+          item.id === updatedEndpoint.id ? updatedEndpoint : item,
+        ),
+      );
+      if (action === "disable") {
+        const fallbackId = endpoints.find(
+          (item) => item.id !== updatedEndpoint.id && isEndpointActive(item),
+        )?.id ?? "";
+        setSelectedEndpointId((current) =>
+          current === updatedEndpoint.id ? fallbackId : current,
+        );
+        if (!fallbackId) {
+          setEventStatus({
+            phase: "idle",
+            message: "Reactivate an endpoint before submitting an event.",
+          });
+        }
+      } else {
+        setSelectedEndpointId((current) => current || updatedEndpoint.id);
+      }
+      setEndpointActionStatus({
+        phase: "success",
+        message: `Endpoint “${updatedEndpoint.name}” is now ${updatedEndpoint.state.toLowerCase()}.`,
+      });
+      setAnnouncement(`Endpoint ${updatedEndpoint.state.toLowerCase()}.`);
+    } catch (error) {
+      setEndpointActionStatus({
+        phase: "error",
+        message:
+          error instanceof Error
+            ? `Could not ${action} endpoint: ${error.message}`
+            : `Could not ${action} endpoint.`,
+      });
+    } finally {
+      setChangingEndpointId("");
+    }
+  }
+
   async function submitEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedEndpointId) {
@@ -712,9 +775,15 @@ export function RelayDashboard({
     }
   }
 
-  const selectedEndpoint = endpoints.find(
+  const activeEndpoints = endpoints.filter(isEndpointActive);
+  const selectedEndpoint = activeEndpoints.find(
     (endpoint) => endpoint.id === selectedEndpointId,
   );
+  const replayEndpoint = endpoints.find(
+    (endpoint) => endpoint.id === deliveryDetail?.endpointId,
+  );
+  const replayBlocked = replayEndpoint !== undefined
+    && !isEndpointActive(replayEndpoint);
 
   return (
     <main className="shell">
@@ -862,13 +931,13 @@ export function RelayDashboard({
                     name="endpointId"
                     value={selectedEndpointId}
                     onChange={(event) => setSelectedEndpointId(event.target.value)}
-                    disabled={endpoints.length === 0 || eventStatus.phase === "loading"}
+                    disabled={activeEndpoints.length === 0 || eventStatus.phase === "loading"}
                     required
                   >
-                    {endpoints.length === 0 ? (
-                      <option value="">No endpoints available</option>
+                    {activeEndpoints.length === 0 ? (
+                      <option value="">No active endpoints available</option>
                     ) : null}
-                    {endpoints.map((endpoint) => (
+                    {activeEndpoints.map((endpoint) => (
                       <option key={endpoint.id} value={endpoint.id}>
                         {endpoint.name}
                       </option>
@@ -905,7 +974,7 @@ export function RelayDashboard({
                 <button
                   className="button button--primary"
                   type="submit"
-                  disabled={endpoints.length === 0 || eventStatus.phase === "loading"}
+                  disabled={activeEndpoints.length === 0 || eventStatus.phase === "loading"}
                 >
                   {eventStatus.phase === "loading"
                     ? "Submitting…"
@@ -928,6 +997,9 @@ export function RelayDashboard({
               </div>
               <span className="countBadge">{endpoints.length}</span>
             </div>
+            {endpointActionStatus.phase !== "idle" ? (
+              <StatusMessage status={endpointActionStatus} />
+            ) : null}
             {endpointListError ? (
               <p className="requestStatus requestStatus--error" role="alert">
                 {endpointListError}
@@ -938,9 +1010,30 @@ export function RelayDashboard({
               <ul className="recordList">
                 {endpoints.map((endpoint) => (
                   <li key={endpoint.id}>
-                    <strong>{endpoint.name}</strong>
+                    <span className="endpointRecord__heading">
+                      <strong>{endpoint.name}</strong>
+                      <StateBadge state={endpoint.state} />
+                    </span>
                     <span>{endpoint.url}</span>
                     <code>{endpoint.id}</code>
+                    <span className="endpointRecord__actions">
+                      <button
+                        className="button button--secondary button--small"
+                        type="button"
+                        aria-label={`${isEndpointActive(endpoint) ? "Disable" : "Reactivate"} endpoint ${endpoint.name}`}
+                        onClick={() => void changeEndpointState(
+                          endpoint,
+                          isEndpointActive(endpoint) ? "disable" : "reactivate",
+                        )}
+                        disabled={changingEndpointId !== ""}
+                      >
+                        {changingEndpointId === endpoint.id
+                          ? "Updating…"
+                          : isEndpointActive(endpoint)
+                            ? "Disable"
+                            : "Reactivate"}
+                      </button>
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -1151,12 +1244,17 @@ export function RelayDashboard({
                   type="button"
                   className="button button--secondary button--small"
                   onClick={() => void replayDelivery()}
-                  disabled={replayStatus.phase === "loading"}
+                  disabled={replayStatus.phase === "loading" || replayBlocked}
                 >
                   {replayStatus.phase === "loading"
                     ? "Scheduling replay…"
                     : "Replay delivery"}
                 </button>
+                {replayBlocked ? (
+                  <span className="fieldHint">
+                    Reactivate the endpoint before scheduling a replay.
+                  </span>
+                ) : null}
               </div>
             ) : null}
 

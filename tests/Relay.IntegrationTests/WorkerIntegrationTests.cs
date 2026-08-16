@@ -143,6 +143,93 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExistingDeliveryContinuesAfterEndpointIsDisabled(bool retryScheduled)
+    {
+        const string receiverOrigin = "http://receiver.test:8080";
+        var signingSecret = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
+        var endpointId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var targetUrl = $"{receiverOrigin}/webhooks/{Guid.NewGuid():D}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"demo.disabled\",\"payload\":{{\"value\":1}}}}";
+        var keyDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "relay-worker-disabled-endpoint-keys",
+            Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(keyDirectory);
+
+        try
+        {
+            var dataProtectionProvider = DataProtectionProvider.Create(new DirectoryInfo(keyDirectory));
+            var secretProtector = new EndpointSecretProtector(dataProtectionProvider);
+            await SeedQueuedDeliveryAsync(
+                endpointId,
+                eventId,
+                deliveryId,
+                targetUrl,
+                secretProtector.Protect(signingSecret),
+                envelopeJson,
+                Guid.NewGuid().ToString("N"));
+
+            await using (var setup = _database.CreateDbContext())
+            {
+                var endpoint = await setup.WebhookEndpoints.SingleAsync();
+                if (retryScheduled)
+                {
+                    var setupDelivery = await setup.Deliveries.SingleAsync();
+                    var startedAtUtc = TestUtcNow.AddSeconds(-3);
+                    var completedAtUtc = TestUtcNow.AddSeconds(-2);
+                    setupDelivery.Claim(Guid.NewGuid(), startedAtUtc);
+                    setupDelivery.ScheduleRetry(TestUtcNow.AddSeconds(-1));
+                    var attempt = new DeliveryAttempt(
+                        Guid.NewGuid(),
+                        setupDelivery.Id,
+                        setupDelivery.AttemptCount,
+                        startedAtUtc);
+                    attempt.MarkFailed(
+                        503,
+                        "http_status",
+                        "The receiver returned HTTP 503.",
+                        completedAtUtc,
+                        1000);
+                    setup.DeliveryAttempts.Add(attempt);
+                }
+                endpoint.Disable();
+                await setup.SaveChangesAsync();
+            }
+
+            var handler = new RecordingSuccessHandler();
+            using var httpClientFactory = new DeterministicHttpClientFactory(handler);
+            await using var database = _database.CreateDbContext();
+            var processor = new DeliveryProcessor(
+                database,
+                httpClientFactory,
+                new DemoWebhookTargetPolicy(receiverOrigin),
+                secretProtector,
+                new FixedTimeProvider(TestUtcNow),
+                NullLogger<DeliveryProcessor>.Instance);
+
+            Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
+
+            await using var verification = _database.CreateDbContext();
+            var delivery = await verification.Deliveries.AsNoTracking().SingleAsync();
+            Assert.Equal(DeliveryState.Succeeded, delivery.State);
+            Assert.Equal(retryScheduled ? 2 : 1, delivery.AttemptCount);
+            Assert.Single(handler.Requests);
+        }
+        finally
+        {
+            if (Directory.Exists(keyDirectory))
+            {
+                Directory.Delete(keyDirectory, recursive: true);
+            }
+        }
+    }
+
 
     [Fact]
     public async Task RetrySuccess()

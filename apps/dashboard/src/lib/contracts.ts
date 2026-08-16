@@ -2,6 +2,7 @@ export interface Endpoint {
   id: string;
   name: string;
   url: string;
+  state: string;
   createdAtUtc?: string;
 }
 
@@ -158,6 +159,7 @@ export function normalizeEndpoint(value: unknown): Endpoint | undefined {
     id,
     name,
     url,
+    state: stringValue(record, "state") ?? "Active",
     createdAtUtc: stringValue(record, "createdAtUtc", "createdAt"),
   };
 }
@@ -166,6 +168,10 @@ export function normalizeEndpoints(value: unknown): Endpoint[] {
   return collectionFrom(value, ["items", "endpoints"])
     .map(normalizeEndpoint)
     .filter((endpoint): endpoint is Endpoint => endpoint !== undefined);
+}
+
+export function isEndpointActive(endpoint: Endpoint): boolean {
+  return endpoint.state.toLowerCase() === "active";
 }
 
 export function normalizeDeliverySummary(

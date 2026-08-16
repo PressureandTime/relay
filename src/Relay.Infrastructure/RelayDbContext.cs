@@ -31,6 +31,9 @@ public sealed class RelayDbContext(DbContextOptions<RelayDbContext> options)
         endpoint.Property(value => value.TargetUrl).HasMaxLength(RelayLimits.EndpointUrlLength);
         endpoint.Property(value => value.ProtectedSigningSecret)
             .HasMaxLength(RelayLimits.ProtectedSecretLength);
+        endpoint.Property(value => value.State)
+            .HasConversion<string>()
+            .HasMaxLength(32);
         endpoint.Property(value => value.CreatedAtUtc).HasColumnType("timestamp with time zone");
     }
 
