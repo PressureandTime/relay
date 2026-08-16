@@ -36,13 +36,31 @@ export function hasDeliveryFilters(filters: DeliveryFilters): boolean {
 
 export function deliveryHistoryPath(
   filters: DeliveryFilters,
-  limit = 20,
+  options: { cursor?: string; limit?: number } = {},
 ): string {
-  const parameters = new URLSearchParams({ limit: String(limit) });
+  const parameters = new URLSearchParams({
+    limit: String(options.limit ?? 20),
+  });
   if (filters.state) parameters.set("state", filters.state);
   if (filters.endpointId) parameters.set("endpointId", filters.endpointId);
   if (filters.eventType) parameters.set("eventType", filters.eventType);
+  if (options.cursor) parameters.set("cursor", options.cursor);
   return `/relay-api/deliveries?${parameters.toString()}`;
+}
+
+export function appendUniqueDeliveries(
+  current: DeliverySummary[],
+  next: DeliverySummary[],
+): DeliverySummary[] {
+  const seen = new Set(current.map((delivery) => delivery.id));
+  return [
+    ...current,
+    ...next.filter((delivery) => {
+      if (seen.has(delivery.id)) return false;
+      seen.add(delivery.id);
+      return true;
+    }),
+  ];
 }
 
 export function deliveryMatchesFilters(

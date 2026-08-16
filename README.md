@@ -1,6 +1,6 @@
 # Relay
 
-Relay is a webhook delivery service that accepts events, signs outbound requests with HMAC-SHA256, delivers them with automatic retries, and records every attempt. A Next.js dashboard shows endpoint state, live delivery state, filtered history, attempt details, and replay controls.
+Relay is a webhook delivery service that accepts events, signs outbound requests with HMAC-SHA256, delivers them with automatic retries, and records every attempt. A Next.js dashboard shows endpoint state, live delivery state, paginated and filtered history, attempt details, and replay controls.
 
 The system runs locally through Docker Compose: an ASP.NET Core API, a .NET background worker, a synthetic receiver, PostgreSQL, and the dashboard.
 
@@ -75,7 +75,7 @@ docker compose up --build --wait --wait-timeout 180
 npm run test:e2e
 ```
 
-Integration tests start disposable PostgreSQL containers through Testcontainers. Three Playwright tests cover immediate success with endpoint lifecycle and delivery filtering, retry-then-success, and failed-delivery replay through the dashboard.
+Integration tests start disposable PostgreSQL containers through Testcontainers. Three Playwright tests cover immediate success with endpoint lifecycle, filtering, and history pagination; retry-then-success; and failed-delivery replay through the dashboard.
 
 ## Security boundary
 
@@ -87,7 +87,7 @@ Integration tests start disposable PostgreSQL containers through Testcontainers.
 ## Limitations
 
 - Receiver state is in-memory and resets when the container restarts.
-- No pagination or retention policy.
+- No delivery retention policy.
 - No arbitrary webhook destinations, authentication, multitenancy, billing, or cloud deployment.
 
 ## Repository layout

@@ -471,7 +471,8 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         AssertSanitized(detailJson, endpoint.SigningSecret, payloadMarker, claimToken);
 
         using var historyDocument = JsonDocument.Parse(historyJson);
-        var historyItem = Assert.Single(historyDocument.RootElement.EnumerateArray());
+        var historyItem = Assert.Single(
+            historyDocument.RootElement.GetProperty("items").EnumerateArray());
         Assert.Equal(submission.DeliveryId, historyItem.GetProperty("id").GetGuid());
         Assert.Equal("Succeeded", historyItem.GetProperty("state").GetString());
 
@@ -520,17 +521,68 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var item = Assert.Single(document.RootElement.EnumerateArray());
+        var item = Assert.Single(
+            document.RootElement.GetProperty("items").EnumerateArray());
         Assert.Equal(failed.DeliveryId, item.GetProperty("id").GetGuid());
         Assert.Equal(firstEndpoint.Id, item.GetProperty("endpointId").GetGuid());
         Assert.Equal("demo.failed", item.GetProperty("eventType").GetString());
         Assert.Equal("Failed", item.GetProperty("state").GetString());
     }
 
+    [Fact]
+    public async Task DeliveryHistoryUsesStableFilterBoundKeysetPagination()
+    {
+        var endpoint = await CreateEndpointAsync();
+        var createdAtUtc = TestUtcNow.AddMinutes(10);
+        var originalIds = new List<Guid>();
+        for (var index = 0; index < 5; index++)
+        {
+            originalIds.Add(await SeedQueuedDeliveryAsync(
+                endpoint.Id,
+                createdAtUtc,
+                "demo.page"));
+        }
+
+        var expectedOrder = originalIds.OrderDescending().ToArray();
+        var first = await GetDeliveryPageAsync("eventType=demo.page&limit=2");
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(expectedOrder[..2], first.DeliveryIds);
+        Assert.NotNull(first.NextCursor);
+
+        var newerId = await SeedQueuedDeliveryAsync(
+            endpoint.Id,
+            createdAtUtc.AddMinutes(1),
+            "demo.page");
+        var second = await GetDeliveryPageAsync(
+            $"eventType=demo.page&limit=2&cursor={Uri.EscapeDataString(first.NextCursor!)}");
+        var third = await GetDeliveryPageAsync(
+            $"eventType=demo.page&limit=2&cursor={Uri.EscapeDataString(second.NextCursor!)}");
+
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, third.StatusCode);
+        Assert.Equal(expectedOrder[2..4], second.DeliveryIds);
+        Assert.Equal(expectedOrder[4..], third.DeliveryIds);
+        Assert.Null(third.NextCursor);
+        Assert.Equal(
+            expectedOrder,
+            first.DeliveryIds.Concat(second.DeliveryIds).Concat(third.DeliveryIds));
+        Assert.DoesNotContain(newerId, second.DeliveryIds.Concat(third.DeliveryIds));
+
+        var refreshed = await GetDeliveryPageAsync("eventType=demo.page&limit=2");
+        Assert.Equal(newerId, refreshed.DeliveryIds[0]);
+
+        var filterMismatch = await GetDeliveryPageAsync(
+            $"eventType=demo.other&limit=2&cursor={Uri.EscapeDataString(first.NextCursor!)}");
+        Assert.Equal(HttpStatusCode.BadRequest, filterMismatch.StatusCode);
+        Assert.Contains("cursor", filterMismatch.RawResponse, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("state=not-a-state", "state")]
     [InlineData("endpointId=00000000-0000-0000-0000-000000000000", "endpointId")]
     [InlineData("eventType=invalid%20type", "eventType")]
+    [InlineData("cursor=not-a-cursor", "cursor")]
     public async Task DeliveryHistoryRejectsInvalidFilters(
         string query,
         string expectedField)
@@ -540,6 +592,109 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.True(document.RootElement.GetProperty("errors").TryGetProperty(expectedField, out _));
+    }
+
+    [Fact]
+    public async Task DeliveryHistoryRejectsInvalidCursorPayloads()
+    {
+        var payloads = new[]
+        {
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                version = 2,
+                createdAtUtcTicks = TestUtcNow.UtcDateTime.Ticks,
+                id = Guid.NewGuid(),
+                state = (string?)null,
+                endpointId = (Guid?)null,
+                eventType = (string?)null,
+            }),
+            JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                version = 1,
+                createdAtUtcTicks = 0,
+                id = Guid.NewGuid(),
+                state = (string?)null,
+                endpointId = (Guid?)null,
+                eventType = (string?)null,
+            }),
+        };
+
+        foreach (var payload in payloads)
+        {
+            var cursor = Convert.ToBase64String(payload)
+                .TrimEnd('=')
+                .Replace('+', '-')
+                .Replace('/', '_');
+            using var response = await _client.GetAsync($"/api/deliveries?cursor={cursor}");
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.True(document.RootElement.GetProperty("errors").TryGetProperty("cursor", out _));
+        }
+    }
+
+    private async Task<Guid> SeedQueuedDeliveryAsync(
+        Guid endpointId,
+        DateTimeOffset createdAtUtc,
+        string eventType)
+    {
+        var eventId = Guid.NewGuid();
+        var deliveryId = Guid.NewGuid();
+        var correlationId = Guid.NewGuid().ToString("N");
+        var payloadJson = "{\"value\":1}";
+        var envelopeJson =
+            $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"type\":\"{eventType}\",\"payload\":{{\"value\":1}}}}";
+        var webhookEvent = new WebhookEvent(
+            eventId,
+            endpointId,
+            eventType,
+            payloadJson,
+            $"event:{Guid.NewGuid():N}",
+            new string('a', RelayLimits.FingerprintLength),
+            correlationId,
+            createdAtUtc);
+        var delivery = new Delivery(
+            deliveryId,
+            eventId,
+            endpointId,
+            envelopeJson,
+            new string('b', RelayLimits.EnvelopeHashLength),
+            correlationId,
+            createdAtUtc);
+
+        await using var database = _database.CreateDbContext();
+        database.AddRange(webhookEvent, delivery);
+        await database.SaveChangesAsync();
+        return deliveryId;
+    }
+
+    private async Task<DeliveryPageSubmission> GetDeliveryPageAsync(string query)
+    {
+        using var response = await _client.GetAsync($"/api/deliveries?{query}");
+        var rawResponse = await response.Content.ReadAsStringAsync();
+        if (response.StatusCode is not HttpStatusCode.OK)
+        {
+            return new DeliveryPageSubmission(
+                response.StatusCode,
+                [],
+                null,
+                rawResponse);
+        }
+
+        using var document = JsonDocument.Parse(rawResponse);
+        var deliveryIds = document.RootElement
+            .GetProperty("items")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("id").GetGuid())
+            .ToArray();
+        var cursorElement = document.RootElement.GetProperty("nextCursor");
+        return new DeliveryPageSubmission(
+            response.StatusCode,
+            deliveryIds,
+            cursorElement.ValueKind == JsonValueKind.Null
+                ? null
+                : cursorElement.GetString(),
+            rawResponse);
     }
 
     private async Task<CreatedEndpoint> CreateEndpointAsync()
@@ -750,6 +905,12 @@ public sealed class ApiIntegrationTests : IAsyncLifetime, IDisposable
     private sealed record EndpointStateSubmission(
         HttpStatusCode StatusCode,
         string? State,
+        string RawResponse);
+
+    private sealed record DeliveryPageSubmission(
+        HttpStatusCode StatusCode,
+        Guid[] DeliveryIds,
+        string? NextCursor,
         string RawResponse);
 
     private sealed record ReplaySubmission(

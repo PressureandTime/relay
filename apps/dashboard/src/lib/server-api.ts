@@ -1,9 +1,9 @@
 import {
-  type DeliverySummary,
+  type DeliveryHistoryLoadResult,
   type Endpoint,
   type LoadResult,
   apiErrorMessage,
-  normalizeDeliveries,
+  normalizeDeliveryHistoryPage,
   normalizeEndpoints,
 } from "./contracts";
 
@@ -41,10 +41,30 @@ export function loadEndpoints(): Promise<LoadResult<Endpoint>> {
   return loadCollection("endpoints", "endpoints", normalizeEndpoints);
 }
 
-export function loadRecentDeliveries(): Promise<LoadResult<DeliverySummary>> {
-  return loadCollection(
-    "deliveries?limit=20",
-    "recent deliveries",
-    normalizeDeliveries,
-  );
+export async function loadRecentDeliveries(): Promise<DeliveryHistoryLoadResult> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/deliveries?limit=20`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    const body: unknown = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      throw new Error(
+        apiErrorMessage(body)
+          ?? `Recent deliveries request failed (${response.status}).`,
+      );
+    }
+
+    const page = normalizeDeliveryHistoryPage(body);
+    if (!page) {
+      throw new Error("Recent deliveries response was not in the expected format.");
+    }
+    return { data: page };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Unknown error";
+    return {
+      data: { items: [] },
+      error: `Could not load recent deliveries: ${detail}`,
+    };
+  }
 }

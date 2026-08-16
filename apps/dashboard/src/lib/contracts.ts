@@ -50,6 +50,11 @@ export interface DeliveryDetail extends DeliverySummary {
   attempts: DeliveryAttempt[];
 }
 
+export interface DeliveryHistoryPage {
+  items: DeliverySummary[];
+  nextCursor?: string;
+}
+
 export interface EventAcceptedResponse {
   eventId: string;
   deliveryId: string;
@@ -66,6 +71,11 @@ export interface ReplayAcceptedResponse {
 
 export interface LoadResult<T> {
   data: T[];
+  error?: string;
+}
+
+export interface DeliveryHistoryLoadResult {
+  data: DeliveryHistoryPage;
   error?: string;
 }
 
@@ -211,6 +221,24 @@ export function normalizeDeliveries(value: unknown): DeliverySummary[] {
   return collectionFrom(value, ["items", "deliveries"])
     .map(normalizeDeliverySummary)
     .filter((delivery): delivery is DeliverySummary => delivery !== undefined);
+}
+
+export function normalizeDeliveryHistoryPage(
+  value: unknown,
+): DeliveryHistoryPage | undefined {
+  const record = asRecord(value);
+  if (!record || !Array.isArray(record.items)) {
+    return undefined;
+  }
+  if (record.nextCursor !== null
+    && (typeof record.nextCursor !== "string" || record.nextCursor.length === 0)) {
+    return undefined;
+  }
+
+  return {
+    items: normalizeDeliveries(record.items),
+    nextCursor: record.nextCursor ?? undefined,
+  };
 }
 
 function normalizeAttempt(

@@ -43,6 +43,10 @@ public sealed record DeliverySummaryResponse(
     int MaxAttempts,
     DateTimeOffset? NextAttemptAtUtc);
 
+public sealed record DeliveryHistoryResponse(
+    IReadOnlyList<DeliverySummaryResponse> Items,
+    string? NextCursor);
+
 public sealed record DeliveryAttemptResponse(
     Guid Id,
     int AttemptNumber,

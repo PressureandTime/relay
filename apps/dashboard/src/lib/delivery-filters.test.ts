@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendUniqueDeliveries,
   deliveryHistoryPath,
   deliveryMatchesFilters,
   hasDeliveryFilters,
@@ -16,6 +17,17 @@ describe("delivery history filters", () => {
       }),
     ).toBe(
       "/relay-api/deliveries?limit=20&state=Succeeded&endpointId=019fbf1d-493a-7d4d-ac06-02fbed992609&eventType=file.processed",
+    );
+  });
+
+  it("adds an opaque continuation cursor", () => {
+    expect(
+      deliveryHistoryPath(
+        { state: "", endpointId: "", eventType: "" },
+        { cursor: "cursor/value+with=characters", limit: 10 },
+      ),
+    ).toBe(
+      "/relay-api/deliveries?limit=10&cursor=cursor%2Fvalue%2Bwith%3Dcharacters",
     );
   });
 
@@ -56,5 +68,14 @@ describe("delivery history filters", () => {
         eventType: "",
       }),
     ).toBe(false);
+  });
+
+  it("appends pages without duplicating delivery IDs", () => {
+    const first = { id: "delivery-1", state: "Succeeded" };
+    const second = { id: "delivery-2", state: "Queued" };
+    const third = { id: "delivery-3", state: "Failed" };
+
+    expect(appendUniqueDeliveries([first, second], [second, third]))
+      .toEqual([first, second, third]);
   });
 });

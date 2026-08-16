@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Relay.Core;
 using Relay.Infrastructure;
@@ -44,7 +45,7 @@ public static class ApiEndpoints
             .ProducesProblem(StatusCodes.Status404NotFound);
         api.MapGet("/deliveries", GetDeliveriesAsync)
             .WithName("GetDeliveries")
-            .Produces<IReadOnlyList<DeliverySummaryResponse>>()
+            .Produces<DeliveryHistoryResponse>()
             .ProducesValidationProblem();
         api.MapPost("/deliveries/{deliveryId:guid}/replays", ReplayDeliveryAsync)
             .WithName("ReplayDelivery")
@@ -335,6 +336,7 @@ public static class ApiEndpoints
         Guid? endpointId,
         string? eventType,
         int? limit,
+        string? cursor,
         RelayDbContext database,
         CancellationToken cancellationToken)
     {
@@ -347,6 +349,19 @@ public static class ApiEndpoints
         if (errors.Count > 0)
         {
             return Results.ValidationProblem(errors);
+        }
+
+        if (!TryDecodeDeliveryCursor(
+                cursor,
+                stateFilter,
+                endpointId,
+                normalizedEventType,
+                out var cursorPosition))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["cursor"] = ["Cursor is invalid or does not match the active filters."],
+            });
         }
 
         var boundedLimit = Math.Clamp(limit ?? 20, 1, 100);
@@ -378,8 +393,17 @@ public static class ApiEndpoints
             query = query.Where(item => item.EventType == normalizedEventType);
         }
 
+        if (cursorPosition is not null)
+        {
+            query = query.Where(item =>
+                item.Delivery.CreatedAtUtc < cursorPosition.CreatedAtUtc
+                || (item.Delivery.CreatedAtUtc == cursorPosition.CreatedAtUtc
+                    && item.Delivery.Id.CompareTo(cursorPosition.Id) < 0));
+        }
+
         var deliveries = await query
             .OrderByDescending(item => item.Delivery.CreatedAtUtc)
+            .ThenByDescending(item => item.Delivery.Id)
             .Select(item => new DeliverySummaryResponse(
                 item.Delivery.Id,
                 item.Delivery.EventId,
@@ -396,10 +420,87 @@ public static class ApiEndpoints
                 item.Delivery.AttemptCount,
                 RelayLimits.MaxDeliveryAttempts,
                 item.Delivery.NextAttemptAtUtc))
-            .Take(boundedLimit)
+            .Take(boundedLimit + 1)
             .ToListAsync(cancellationToken);
 
-        return Results.Ok(deliveries);
+        var hasMore = deliveries.Count > boundedLimit;
+        if (hasMore)
+        {
+            deliveries.RemoveAt(boundedLimit);
+        }
+
+        var nextCursor = hasMore
+            ? EncodeDeliveryCursor(
+                deliveries[^1],
+                stateFilter,
+                endpointId,
+                normalizedEventType)
+            : null;
+
+        return Results.Ok(new DeliveryHistoryResponse(deliveries, nextCursor));
+    }
+
+    private static string EncodeDeliveryCursor(
+        DeliverySummaryResponse delivery,
+        DeliveryState? state,
+        Guid? endpointId,
+        string? eventType)
+    {
+        var payload = new DeliveryCursorPayload(
+            Version: 1,
+            delivery.CreatedAtUtc.UtcDateTime.Ticks,
+            delivery.Id,
+            state?.ToString(),
+            endpointId,
+            eventType);
+        return WebEncoders.Base64UrlEncode(
+            JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions));
+    }
+
+    private static bool TryDecodeDeliveryCursor(
+        string? encodedCursor,
+        DeliveryState? state,
+        Guid? endpointId,
+        string? eventType,
+        out DeliveryCursor? cursor)
+    {
+        cursor = null;
+        if (encodedCursor is null)
+        {
+            return true;
+        }
+
+        if (encodedCursor.Length is 0 or > 1024)
+        {
+            return false;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Deserialize<DeliveryCursorPayload>(
+                WebEncoders.Base64UrlDecode(encodedCursor),
+                SerializerOptions);
+            if (payload is null
+                || payload.Version != 1
+                || payload.CreatedAtUtcTicks == 0
+                || payload.Id == Guid.Empty
+                || !string.Equals(payload.State, state?.ToString(), StringComparison.Ordinal)
+                || payload.EndpointId != endpointId
+                || !string.Equals(payload.EventType, eventType, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            cursor = new DeliveryCursor(
+                new DateTimeOffset(payload.CreatedAtUtcTicks, TimeSpan.Zero),
+                payload.Id);
+            return true;
+        }
+        catch (Exception exception) when (
+            exception is FormatException or JsonException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
     }
 
     private static Dictionary<string, string[]> ValidateDeliveryFilters(
@@ -794,6 +895,18 @@ public static class ApiEndpoints
         DeliveryState State,
         string RequestFingerprint,
         string CorrelationId);
+
+    private sealed record DeliveryCursor(
+        DateTimeOffset CreatedAtUtc,
+        Guid Id);
+
+    private sealed record DeliveryCursorPayload(
+        int Version,
+        long CreatedAtUtcTicks,
+        Guid Id,
+        string? State,
+        Guid? EndpointId,
+        string? EventType);
 
     private sealed record DeliveryProjection(
         Guid Id,

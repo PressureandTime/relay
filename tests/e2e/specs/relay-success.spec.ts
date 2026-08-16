@@ -162,5 +162,83 @@ test("registers an endpoint, delivers an event, and restores its status", async 
   await page.getByRole("button", { name: "Reset" }).click();
   await expect(page.getByText(/recent deliveries loaded\./)).toBeVisible();
   await expect(persistedDelivery).toBeVisible();
+
+  const paginationEventType = `relay.pagination.${suffix}`;
+  for (let index = 0; index < 21; index++) {
+    const response = await page.request.post("/relay-api/events", {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+      data: {
+        endpointId: registeredEndpoint.id,
+        type: paginationEventType,
+        payload: {
+          fileId: `file_page_${index}`,
+          status: "queued",
+        },
+      },
+    });
+    expect(response.status()).toBe(202);
+  }
+
+  await page.reload();
+  await page
+    .getByRole("combobox", { name: "Delivery endpoint" })
+    .selectOption(registeredEndpoint.id);
+  await page
+    .getByRole("textbox", { name: "Delivery event type" })
+    .fill(paginationEventType);
+  const paginationFilterResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET"
+      && url.pathname === "/relay-api/deliveries"
+      && url.searchParams.get("endpointId") === registeredEndpoint.id
+      && url.searchParams.get("eventType") === paginationEventType;
+  });
+  await page.getByRole("button", { name: "Apply filters" }).click();
+  expect((await paginationFilterResponsePromise).status()).toBe(200);
+
+  const deliveryButtons = page.locator(".deliveryButton");
+  await expect(deliveryButtons).toHaveCount(20);
+  await expect(persistedDelivery).not.toBeVisible();
+
+  let failNextContinuation = true;
+  await page.route(/\/relay-api\/deliveries\?.*cursor=/, async (route) => {
+    if (failNextContinuation) {
+      failNextContinuation = false;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/problem+json",
+        body: JSON.stringify({ title: "Synthetic continuation failure." }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: "Load more" }).click();
+  await expect(
+    page.getByText(
+      "Could not load older deliveries: Synthetic continuation failure.",
+    ),
+  ).toBeVisible();
+  await expect(deliveryButtons).toHaveCount(20);
+  expect(consoleErrors).toContain(
+    "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+  );
+  consoleErrors.length = 0;
+
+  const continuationResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET"
+      && url.pathname === "/relay-api/deliveries"
+      && Boolean(url.searchParams.get("cursor"))
+      && url.searchParams.get("endpointId") === registeredEndpoint.id
+      && url.searchParams.get("eventType") === paginationEventType;
+  });
+  await page.getByRole("button", { name: "Load more" }).click();
+  expect((await continuationResponsePromise).status()).toBe(200);
+  await expect(deliveryButtons).toHaveCount(21);
+  await expect(persistedDelivery).not.toBeVisible();
+  await expect(page.getByText("End of history.")).toBeVisible();
+  await page.unroute(/\/relay-api\/deliveries\?.*cursor=/);
   expect(consoleErrors).toEqual([]);
 });

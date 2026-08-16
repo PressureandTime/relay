@@ -4,6 +4,7 @@ import {
   isEndpointActive,
   normalizeDeliveries,
   normalizeDeliveryDetail,
+  normalizeDeliveryHistoryPage,
   normalizeEndpoint,
 } from "./contracts";
 
@@ -105,6 +106,37 @@ describe("dashboard API contract normalization", () => {
         },
       ],
     });
+  });
+
+  it("normalizes delivery history page metadata", () => {
+    expect(
+      normalizeDeliveryHistoryPage({
+        items: [
+          {
+            id: "019fbf1d-5c7d-72ca-81c9-9264dc785b61",
+            state: "Queued",
+          },
+        ],
+        nextCursor: "cursor-value",
+      }),
+    ).toEqual({
+      items: [
+        {
+          id: "019fbf1d-5c7d-72ca-81c9-9264dc785b61",
+          state: "Queued",
+        },
+      ],
+      nextCursor: "cursor-value",
+    });
+
+    expect(normalizeDeliveryHistoryPage({ items: [], nextCursor: null }))
+      .toEqual({ items: [], nextCursor: undefined });
+    expect(normalizeDeliveryHistoryPage({ nextCursor: "missing-items" }))
+      .toBeUndefined();
+    expect(normalizeDeliveryHistoryPage([])).toBeUndefined();
+    expect(normalizeDeliveryHistoryPage({ items: [], nextCursor: 42 }))
+      .toBeUndefined();
+    expect(normalizeDeliveryHistoryPage({ items: [] })).toBeUndefined();
   });
 
   it("selects a useful Problem Details message", () => {

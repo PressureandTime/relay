@@ -95,3 +95,13 @@ Status: accepted
 Webhook endpoints have an explicit `Active` or `Disabled` state. New endpoints are active. Disable and reactivate operations are idempotent, return the current endpoint representation, and do not delete endpoint or delivery history.
 
 A disabled endpoint rejects new event submissions and new manual replays with `409 Conflict`. An identical event or replay request that already succeeded idempotently still returns its original accepted response, even if the endpoint was disabled later. Deliveries that were queued or retry-scheduled before disablement continue through the existing worker pipeline; disabling an endpoint is an intake control, not a cancellation mechanism.
+
+## 015 — Stable delivery-history cursors
+
+Status: accepted
+
+`GET /api/deliveries` returns `{ items, nextCursor }` and orders deliveries by `CreatedAtUtc DESC, Id DESC`. A continuation cursor records the last returned position and the normalized filter values. It is versioned JSON encoded as unpadded base64url, contains no secret, and is rejected when malformed or reused with different filters. Pages fetch one extra row to determine whether another cursor exists.
+
+This is forward keyset traversal, not a database snapshot. Deliveries created after the first page appear after Refresh rather than in an older continuation page. State changes can move records into or out of a filtered result between requests; Refresh reconciles the list. Apply, Reset, manual Refresh, and terminal polling replace the dashboard with page one. Load more appends in server order, removes duplicate IDs defensively, and retains the existing list and cursor when a continuation request fails.
+
+No database index is added for this local bounded dataset. An index should follow measured query evidence rather than an unsupported performance claim.

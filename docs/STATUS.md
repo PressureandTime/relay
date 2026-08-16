@@ -12,17 +12,18 @@
 | Stale-claim recovery | ✓ | 30-second lease, expired claims re-queue |
 | Manual replay | ✓ | Idempotent, new envelope and correlation, lineage tracking |
 | Delivery filtering | ✓ | Exact state, endpoint, and event-type filters; combined server-side |
+| Delivery pagination | ✓ | Stable keyset cursor; filter binding; dashboard continuation and retry |
 | Receiver simulator | ✓ | success, retryThenSucceed, failUntilReplay, alwaysFail |
-| Dashboard | ✓ | Endpoint lifecycle, live polling, filtering, replay UI, accessible, responsive |
+| Dashboard | ✓ | Endpoint lifecycle, live polling, filtering, pagination, replay UI, accessible, responsive |
 
 ## Test matrix
 
 | Suite | Tests | Tooling |
 |-------|-------|---------|
 | .NET unit | 27 | xUnit |
-| .NET integration | 30 | Testcontainers + PostgreSQL 18 |
-| Frontend unit | 10 | Vitest |
-| E2E | 3 workflows: lifecycle/success/filtering, retry, replay | Playwright + Chromium |
+| .NET integration | 33 | Testcontainers + PostgreSQL 18 |
+| Frontend unit | 13 | Vitest |
+| E2E | 3 workflows: lifecycle/success/filtering/pagination, retry, replay | Playwright + Chromium |
 
 ## Known issues
 
@@ -40,7 +41,7 @@
 ## Verified locally
 
 - .NET Release build: 0 warnings, 0 errors.
-- xUnit: 27 unit tests and 30 PostgreSQL integration tests passed.
-- Frontend: ESLint, TypeScript, 10 Vitest tests, and the Next.js production build passed.
+- xUnit: 27 unit tests and 33 PostgreSQL integration tests passed.
+- Frontend: ESLint, TypeScript, 13 Vitest tests, and the Next.js production build passed.
 - Docker Compose: npm 11.16 clean install and all images built; migration exited 0; API, worker, receiver, PostgreSQL, and dashboard became healthy.
-- Playwright: 3 Chromium workflows passed, including endpoint disable/reactivate, combined delivery filtering and reset, retry, and replay.
+- Playwright: 3 Chromium workflows passed, including endpoint disable/reactivate, combined delivery filtering, cursor pagination with continuation retry, retry scheduling, and replay.

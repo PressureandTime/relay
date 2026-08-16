@@ -13,7 +13,8 @@ export default async function Home() {
     <RelayDashboard
       initialEndpoints={endpoints.data}
       initialEndpointError={endpoints.error}
-      initialDeliveries={deliveries.data}
+      initialDeliveries={deliveries.data.items}
+      initialNextDeliveryCursor={deliveries.data.nextCursor}
       initialDeliveryError={deliveries.error}
     />
   );

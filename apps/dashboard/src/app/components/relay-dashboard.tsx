@@ -17,8 +17,8 @@ import {
   type ReplayAcceptedResponse,
   apiErrorMessage,
   isEndpointActive,
-  normalizeDeliveries,
   normalizeDeliveryDetail,
+  normalizeDeliveryHistoryPage,
   normalizeEndpoint,
 } from "@/lib/contracts";
 import {
@@ -29,6 +29,7 @@ import {
   DELIVERY_STATES,
   EMPTY_DELIVERY_FILTERS,
   type DeliveryFilters,
+  appendUniqueDeliveries,
   deliveryHistoryPath,
   deliveryMatchesFilters,
   hasDeliveryFilters,
@@ -58,7 +59,13 @@ interface RelayDashboardProps {
   initialEndpoints: Endpoint[];
   initialEndpointError?: string;
   initialDeliveries: DeliverySummary[];
+  initialNextDeliveryCursor?: string;
   initialDeliveryError?: string;
+}
+
+interface HistoryLoadOptions {
+  append?: boolean;
+  cursor?: string;
 }
 
 const idleReceiver: RequestStatus = {
@@ -172,6 +179,7 @@ export function RelayDashboard({
   initialEndpoints,
   initialEndpointError,
   initialDeliveries,
+  initialNextDeliveryCursor,
   initialDeliveryError,
 }: RelayDashboardProps) {
   const [receiver, setReceiver] = useState<Receiver | null>(null);
@@ -196,6 +204,9 @@ export function RelayDashboard({
   const [eventPayload, setEventPayload] = useState(DEFAULT_PAYLOAD);
   const [eventStatus, setEventStatus] = useState<RequestStatus>(idleEvent);
   const [deliveries, setDeliveries] = useState(initialDeliveries);
+  const [nextDeliveryCursor, setNextDeliveryCursor] = useState(
+    initialNextDeliveryCursor ?? "",
+  );
   const [deliveryFilterDraft, setDeliveryFilterDraft] =
     useState<DeliveryFilters>(() => ({ ...EMPTY_DELIVERY_FILTERS }));
   const [appliedDeliveryFilters, setAppliedDeliveryFilters] =
@@ -233,24 +244,45 @@ export function RelayDashboard({
   );
   const detailControllerRef = useRef<AbortController | null>(null);
   const replayIntentRef = useRef<ReplayIntent | null>(null);
+  const historyRequestIdRef = useRef(0);
 
   const loadHistory = useCallback(async (
     filters: DeliveryFilters,
-    signal?: AbortSignal,
+    options: HistoryLoadOptions = {},
   ) => {
+    const requestId = ++historyRequestIdRef.current;
+    const append = options.append === true;
     setHistoryStatus({
       phase: "loading",
-      message: "Refreshing deliveries…",
+      message: append ? "Loading older deliveries…" : "Refreshing deliveries…",
     });
+    if (!append) {
+      setNextDeliveryCursor("");
+    }
 
     try {
-      const body = await requestJson<unknown>(deliveryHistoryPath(filters), {
-        signal,
-      });
-      const nextDeliveries = normalizeDeliveries(body);
-      setDeliveries(nextDeliveries);
+      const body = await requestJson<unknown>(deliveryHistoryPath(filters, {
+        cursor: options.cursor,
+      }));
+      const page = normalizeDeliveryHistoryPage(body);
+      if (!page) {
+        throw new Error("Delivery history response was not in the expected format.");
+      }
+      if (requestId !== historyRequestIdRef.current) return;
+
+      setDeliveries((current) =>
+        append ? appendUniqueDeliveries(current, page.items) : page.items,
+      );
+      setNextDeliveryCursor(page.nextCursor ?? "");
       setHistoryStatus(
-        nextDeliveries.length === 0
+        append
+          ? {
+              phase: "success",
+              message: page.items.length === 0
+                ? "End of delivery history reached."
+                : `${page.items.length} older ${page.items.length === 1 ? "delivery" : "deliveries"} loaded.`,
+            }
+          : page.items.length === 0
           ? {
               phase: "idle",
               message: hasDeliveryFilters(filters)
@@ -260,28 +292,26 @@ export function RelayDashboard({
           : {
               phase: "success",
               message: historyLoadedMessage(
-                nextDeliveries.length,
+                page.items.length,
                 hasDeliveryFilters(filters),
               ),
             },
       );
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        return;
-      }
+      if (requestId !== historyRequestIdRef.current) return;
       setHistoryStatus({
         phase: "error",
         message:
           error instanceof Error
-            ? `Could not refresh deliveries: ${error.message}`
-            : "Could not refresh deliveries.",
+            ? `Could not ${append ? "load older" : "refresh"} deliveries: ${error.message}`
+            : `Could not ${append ? "load older" : "refresh"} deliveries.`,
       });
     }
   }, []);
 
   const refreshHistory = useCallback(
-    async (signal?: AbortSignal) => {
-      await loadHistory(appliedDeliveryFilters, signal);
+    async () => {
+      await loadHistory(appliedDeliveryFilters);
     },
     [appliedDeliveryFilters, loadHistory],
   );
@@ -321,7 +351,7 @@ export function RelayDashboard({
         setDeliveries((current) => {
           const remainder = current.filter((delivery) => delivery.id !== detail.id);
           return deliveryMatchesFilters(detail, appliedDeliveryFilters)
-            ? [detail, ...remainder].slice(0, 20)
+            ? [detail, ...remainder]
             : remainder;
         });
 
@@ -334,7 +364,7 @@ export function RelayDashboard({
           setAnnouncement(
             `Delivery ${detail.id} finished with state ${detail.state}.`,
           );
-          await refreshHistory(controller.signal);
+          await refreshHistory();
           setTrackedDeliveryId((current) =>
             current === detail.id ? "" : current,
           );
@@ -404,6 +434,14 @@ export function RelayDashboard({
     setDeliveryFilterDraft(filters);
     setAppliedDeliveryFilters(filters);
     await loadHistory(filters);
+  }
+
+  async function loadMoreDeliveries() {
+    if (!nextDeliveryCursor) return;
+    await loadHistory(appliedDeliveryFilters, {
+      append: true,
+      cursor: nextDeliveryCursor,
+    });
   }
 
   async function prepareReceiver(event?: FormEvent<HTMLFormElement>) {
@@ -637,7 +675,7 @@ export function RelayDashboard({
           ? [
               acceptedDelivery,
               ...current.filter((delivery) => delivery.id !== body.deliveryId),
-            ].slice(0, 20)
+            ]
           : current,
       );
       setSelectedDeliveryId(body.deliveryId);
@@ -1170,6 +1208,22 @@ export function RelayDashboard({
                   </li>
                 ))}
               </ul>
+            ) : null}
+            {nextDeliveryCursor ? (
+              <div className="historyPagination">
+                <button
+                  className="button button--secondary button--small"
+                  type="button"
+                  onClick={() => void loadMoreDeliveries()}
+                  disabled={historyStatus.phase === "loading"}
+                >
+                  {historyStatus.phase === "loading"
+                    ? "Loading…"
+                    : "Load more"}
+                </button>
+              </div>
+            ) : deliveries.length > 0 ? (
+              <p className="paginationEnd">End of history.</p>
             ) : null}
           </section>
         </aside>
