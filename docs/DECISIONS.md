@@ -115,3 +115,11 @@ The worker removes completed webhook event groups after a configurable retention
 An event is eligible only when it has at least one delivery and every delivery in the group is `Succeeded` or `Failed` with `CompletedAtUtc` before the cutoff. Originals and replays therefore remain together. Queued, processing, retry-scheduled, recently completed, and incomplete deliveries preserve the whole event group. Deleting the event uses the existing database cascades to remove its deliveries and attempts; the endpoint remains.
 
 Retention also removes the event's idempotency record and payload. Reusing the same endpoint and idempotency key after expiry creates a new event, which is the expected boundary once the original record no longer exists. The worker logs only passes that remove data. No new table, index, migration, hosted service, or external scheduler is introduced.
+
+## 017 — Safe dashboard event retries
+
+Status: accepted
+
+The dashboard keeps one in-memory submission intent for the normalized event request body: endpoint identifier, trimmed event type, and parsed payload. Repeating the same submission after a failed or unknown response reuses its `Idempotency-Key`, allowing the API to return the original event and delivery instead of creating a duplicate. A changed request body receives a new key.
+
+The intent is cleared only after the dashboard validates an accepted response. It is also cleared by that success so deliberately submitting the same form again creates a new event. The intent is not written to local or session storage; event payloads and idempotency keys therefore do not persist across a page reload.

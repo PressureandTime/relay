@@ -26,6 +26,10 @@ import {
   resolveReplayIntent,
 } from "@/lib/replay-intent";
 import {
+  type EventSubmissionIntent,
+  resolveEventSubmissionIntent,
+} from "@/lib/event-submission-intent";
+import {
   DELIVERY_STATES,
   EMPTY_DELIVERY_FILTERS,
   type DeliveryFilters,
@@ -243,6 +247,7 @@ export function RelayDashboard({
     "Dashboard ready. Follow the three steps to send a synthetic event.",
   );
   const detailControllerRef = useRef<AbortController | null>(null);
+  const eventSubmissionIntentRef = useRef<EventSubmissionIntent | null>(null);
   const replayIntentRef = useRef<ReplayIntent | null>(null);
   const historyRequestIdRef = useRef(0);
 
@@ -640,6 +645,16 @@ export function RelayDashboard({
       phase: "idle",
       message: "Waiting for the event to be accepted.",
     });
+    const requestBody = JSON.stringify({
+      endpointId: selectedEndpointId,
+      type,
+      payload,
+    });
+    const submissionIntent = resolveEventSubmissionIntent(
+      requestBody,
+      eventSubmissionIntentRef.current,
+    );
+    eventSubmissionIntentRef.current = submissionIntent;
 
     try {
       const body = await requestJson<EventAcceptedResponse>(
@@ -648,17 +663,19 @@ export function RelayDashboard({
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Idempotency-Key": crypto.randomUUID(),
+            "Idempotency-Key": submissionIntent.idempotencyKey,
           },
-          body: JSON.stringify({
-            endpointId: selectedEndpointId,
-            type,
-            payload,
-          }),
+          body: requestBody,
         },
       );
       if (!body.deliveryId || !body.eventId || !body.state) {
         throw new Error("Event response was missing required fields.");
+      }
+      if (
+        eventSubmissionIntentRef.current?.idempotencyKey ===
+        submissionIntent.idempotencyKey
+      ) {
+        eventSubmissionIntentRef.current = null;
       }
 
       const acceptedDelivery: DeliverySummary = {

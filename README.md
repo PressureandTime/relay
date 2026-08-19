@@ -22,7 +22,7 @@ Only the dashboard is published to the host at `127.0.0.1:3000`. The API, worker
 ## Delivery flow
 
 1. Register an active webhook endpoint with a target URL and signing secret. Disable it to stop new events and replays without cancelling work already queued; reactivate it to resume intake.
-2. Submit an event with a JSON payload and idempotency key.
+2. Submit an event with a JSON payload and idempotency key. If the dashboard receives an uncertain failure, retrying the unchanged form reuses the key and recovers the original result.
 3. The API creates the event and a queued delivery in one transaction.
 4. The worker claims the delivery, signs the envelope, and sends an HTTP POST.
 5. On a retryable failure (HTTP 408, 429, 5xx, timeout, transport error), the worker schedules the next attempt with exponential backoff: 1 s, 2 s, 4 s — up to four total attempts.
@@ -76,7 +76,7 @@ docker compose up --build --wait --wait-timeout 180
 npm run test:e2e
 ```
 
-Integration tests start disposable PostgreSQL containers through Testcontainers. Four Playwright tests cover immediate success with endpoint lifecycle, filtering, and history pagination; retry-then-success; failed-delivery replay; and event validation, loading, error, and recovery states through the dashboard.
+Integration tests start disposable PostgreSQL containers through Testcontainers. Four Playwright tests cover immediate success with endpoint lifecycle, filtering, and history pagination; retry-then-success; failed-delivery replay; and event validation, loading, and idempotent recovery after a lost response.
 
 ## Retention
 
