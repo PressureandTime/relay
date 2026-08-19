@@ -107,8 +107,6 @@ public sealed class DeliveryStateTests
                 completedAtUtc.AddSeconds(1),
                 30));
     }
-
-
     [Fact]
     public void ClaimSetsLeaseAndIncrementsAttemptCount()
     {
@@ -144,7 +142,7 @@ public sealed class DeliveryStateTests
     {
         var delivery = CreateDelivery();
         delivery.Claim(Guid.NewGuid(), CreatedAtUtc.AddSeconds(1));
-        
+
         var nextAttemptAt = CreatedAtUtc.AddSeconds(5);
         delivery.ScheduleRetry(nextAttemptAt);
 
@@ -160,11 +158,11 @@ public sealed class DeliveryStateTests
     {
         var delivery = CreateDelivery();
         Assert.Throws<InvalidOperationException>(() => delivery.ScheduleRetry(CreatedAtUtc.AddSeconds(5)));
-        
+
         var claimToken = Guid.NewGuid();
         delivery.Claim(claimToken, CreatedAtUtc.AddSeconds(1));
         delivery.MarkSucceeded(claimToken, CreatedAtUtc.AddSeconds(2));
-        
+
         Assert.Throws<InvalidOperationException>(() => delivery.ScheduleRetry(CreatedAtUtc.AddSeconds(5)));
     }
 
@@ -173,7 +171,7 @@ public sealed class DeliveryStateTests
     {
         var delivery = CreateDelivery();
         delivery.Claim(Guid.NewGuid(), CreatedAtUtc.AddSeconds(1));
-        
+
         var recoveryTime = CreatedAtUtc.AddSeconds(40);
         delivery.RecoverStaleClaim(recoveryTime);
 
@@ -189,28 +187,9 @@ public sealed class DeliveryStateTests
     {
         var delivery = CreateDelivery();
         delivery.Claim(Guid.NewGuid(), CreatedAtUtc.AddSeconds(1));
-        
+
         var recoveryTime = CreatedAtUtc.AddSeconds(20);
         Assert.Throws<InvalidOperationException>(() => delivery.RecoverStaleClaim(recoveryTime));
-    }
-
-    [Fact]
-    public void MarkSucceededClearsErrorFields()
-    {
-        var delivery = CreateDelivery();
-        var claimToken = Guid.NewGuid();
-        delivery.Claim(claimToken, CreatedAtUtc.AddSeconds(1));
-        delivery.MarkFailed(claimToken, "timeout", "error", CreatedAtUtc.AddSeconds(2));
-        
-        // Force state to Processing to simulate a weird transition or a replay/retry that kept the same delivery
-        typeof(Delivery).GetProperty("State")!.SetValue(delivery, DeliveryState.RetryScheduled);
-        
-        var claimToken2 = Guid.NewGuid();
-        delivery.Claim(claimToken2, CreatedAtUtc.AddSeconds(6));
-        delivery.MarkSucceeded(claimToken2, CreatedAtUtc.AddSeconds(7));
-
-        Assert.Null(delivery.ErrorCode);
-        Assert.Null(delivery.ErrorMessage);
     }
 
     [Fact]

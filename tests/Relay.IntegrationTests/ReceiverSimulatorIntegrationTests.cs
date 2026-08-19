@@ -135,25 +135,21 @@ public sealed class ReceiverSimulatorIntegrationTests
         var body = Encoding.UTF8.GetBytes(
             $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"value\":1}}");
 
-        // Attempt 1: expect 503.
         var status1 = await SendSignedAsync(
             client, receiverId, eventId, deliveryId, correlationId,
             timestamp, signingSecret, body);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, status1);
 
-        // Attempt 2 (same deliveryId): expect 503.
         var status2 = await SendSignedAsync(
             client, receiverId, eventId, deliveryId, correlationId,
             timestamp + 1, signingSecret, body);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, status2);
 
-        // Attempt 3 (same deliveryId): expect 204.
         var status3 = await SendSignedAsync(
             client, receiverId, eventId, deliveryId, correlationId,
             timestamp + 2, signingSecret, body);
         Assert.Equal(HttpStatusCode.NoContent, status3);
 
-        // Verify receipts.
         using var receiptsResponse = await client.GetAsync(
             $"/_control/receivers/{receiverId:D}/receipts");
         var receiptsJson = await receiptsResponse.Content.ReadAsStringAsync();
@@ -185,7 +181,6 @@ public sealed class ReceiverSimulatorIntegrationTests
         var body = Encoding.UTF8.GetBytes(
             $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{originalDeliveryId:D}\",\"value\":1}}");
 
-        // Original delivery: all attempts return 503 (fail until replay).
         for (var i = 0; i < 4; i++)
         {
             var status = await SendSignedAsync(
@@ -194,7 +189,6 @@ public sealed class ReceiverSimulatorIntegrationTests
             Assert.Equal(HttpStatusCode.ServiceUnavailable, status);
         }
 
-        // Replay delivery: same eventId, new deliveryId → should return 204.
         var replayDeliveryId = Guid.NewGuid();
         var replayBody = Encoding.UTF8.GetBytes(
             $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{replayDeliveryId:D}\",\"value\":1}}");
@@ -203,13 +197,12 @@ public sealed class ReceiverSimulatorIntegrationTests
             timestamp + 4, signingSecret, replayBody);
         Assert.Equal(HttpStatusCode.NoContent, replayStatus);
 
-        // Verify receipts: original delivery had 4 receives, replay had 1.
         using var receiptsResponse = await client.GetAsync(
             $"/_control/receivers/{receiverId:D}/receipts");
         var receiptsJson = await receiptsResponse.Content.ReadAsStringAsync();
         using var receiptsDocument = JsonDocument.Parse(receiptsJson);
         var receipts = receiptsDocument.RootElement.EnumerateArray().ToList();
-        Assert.Equal(2, receipts.Count); // one for original, one for replay
+        Assert.Equal(2, receipts.Count);
         Assert.Equal(4, receipts[0].GetProperty("receiveCount").GetInt32());
         Assert.Equal(503, receipts[0].GetProperty("statusCode").GetInt32());
         Assert.Equal(1, receipts[1].GetProperty("receiveCount").GetInt32());
@@ -238,7 +231,6 @@ public sealed class ReceiverSimulatorIntegrationTests
         var body = Encoding.UTF8.GetBytes(
             $"{{\"eventId\":\"{eventId:D}\",\"deliveryId\":\"{deliveryId:D}\",\"value\":1}}");
 
-        // All attempts return 500.
         for (var i = 0; i < 3; i++)
         {
             var status = await SendSignedAsync(
@@ -247,7 +239,6 @@ public sealed class ReceiverSimulatorIntegrationTests
             Assert.Equal(HttpStatusCode.InternalServerError, status);
         }
 
-        // Verify receipts: 3 receives, all 500.
         using var receiptsResponse = await client.GetAsync(
             $"/_control/receivers/{receiverId:D}/receipts");
         var receiptsJson = await receiptsResponse.Content.ReadAsStringAsync();

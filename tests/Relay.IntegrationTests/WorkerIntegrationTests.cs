@@ -265,7 +265,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 correlationId);
 
             var timeProvider = new FixedTimeProvider(TestUtcNow);
-            // Return 503 for first two attempts, 204 for the third.
             var handler = new SequenceHandler(
                 new(HttpStatusCode.ServiceUnavailable),
                 new(HttpStatusCode.ServiceUnavailable),
@@ -282,16 +281,14 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 timeProvider,
                 NullLogger<DeliveryProcessor>.Instance);
 
-            // Attempt 1: 503 → RetryScheduled
             Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
             await using (var check = _database.CreateDbContext())
             {
-                var d = await check.Deliveries.AsNoTracking().SingleAsync();
-                Assert.Equal(DeliveryState.RetryScheduled, d.State);
-                Assert.Equal(1, d.AttemptCount);
+                var delivery = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, delivery.State);
+                Assert.Equal(1, delivery.AttemptCount);
             }
 
-            // Advance time beyond the 1-second delay.
             timeProvider = new FixedTimeProvider(TestUtcNow.AddSeconds(2));
             await using var database2 = _database.CreateDbContext();
             processor = new DeliveryProcessor(
@@ -302,16 +299,14 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 timeProvider,
                 NullLogger<DeliveryProcessor>.Instance);
 
-            // Attempt 2: 503 → RetryScheduled
             Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
             await using (var check = _database.CreateDbContext())
             {
-                var d = await check.Deliveries.AsNoTracking().SingleAsync();
-                Assert.Equal(DeliveryState.RetryScheduled, d.State);
-                Assert.Equal(2, d.AttemptCount);
+                var delivery = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, delivery.State);
+                Assert.Equal(2, delivery.AttemptCount);
             }
 
-            // Advance time beyond the 2-second delay.
             timeProvider = new FixedTimeProvider(TestUtcNow.AddSeconds(5));
             await using var database3 = _database.CreateDbContext();
             processor = new DeliveryProcessor(
@@ -322,13 +317,12 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 timeProvider,
                 NullLogger<DeliveryProcessor>.Instance);
 
-            // Attempt 3: 204 → Succeeded
             Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
             await using (var check = _database.CreateDbContext())
             {
-                var d = await check.Deliveries.AsNoTracking().SingleAsync();
-                Assert.Equal(DeliveryState.Succeeded, d.State);
-                Assert.Equal(3, d.AttemptCount);
+                var delivery = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.Succeeded, delivery.State);
+                Assert.Equal(3, delivery.AttemptCount);
 
                 var attempts = await check.DeliveryAttempts.AsNoTracking()
                     .OrderBy(a => a.AttemptNumber).ToListAsync();
@@ -384,7 +378,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 correlationId);
 
             var baseTime = TestUtcNow;
-            // All four attempts return 503.
             var handler = new SequenceHandler(
                 new(HttpStatusCode.ServiceUnavailable),
                 new(HttpStatusCode.ServiceUnavailable),
@@ -396,7 +389,7 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
             for (var attempt = 1; attempt <= 4; attempt++)
             {
                 var delay = attempt > 1 ? RelayLimits.RetryDelays[attempt - 2] : TimeSpan.Zero;
-                var now = baseTime.Add(delay).AddSeconds(1); // after the retry delay
+                var now = baseTime.Add(delay).AddSeconds(1);
                 var timeProvider = new FixedTimeProvider(now);
                 await using var database = _database.CreateDbContext();
                 var processor = new DeliveryProcessor(
@@ -410,23 +403,22 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
 
                 await using var check = _database.CreateDbContext();
-                var d = await check.Deliveries.AsNoTracking().SingleAsync();
-                Assert.Equal(attempt, d.AttemptCount);
+                var delivery = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(attempt, delivery.AttemptCount);
 
                 if (attempt < 4)
                 {
-                    Assert.Equal(DeliveryState.RetryScheduled, d.State);
+                    Assert.Equal(DeliveryState.RetryScheduled, delivery.State);
                 }
                 else
                 {
-                    Assert.Equal(DeliveryState.Failed, d.State);
-                    Assert.Equal("http_status", d.ErrorCode);
+                    Assert.Equal(DeliveryState.Failed, delivery.State);
+                    Assert.Equal("http_status", delivery.ErrorCode);
                 }
 
                 baseTime = now;
             }
 
-            // Verify no more processing (delivery is Failed).
             await using var finalDatabase = _database.CreateDbContext();
             var finalProcessor = new DeliveryProcessor(
                 finalDatabase,
@@ -437,7 +429,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 NullLogger<DeliveryProcessor>.Instance);
             Assert.False(await finalProcessor.TryProcessNextAsync(CancellationToken.None));
 
-            // Verify all attempts recorded.
             await using var verifyDatabase = _database.CreateDbContext();
             var attempts = await verifyDatabase.DeliveryAttempts.AsNoTracking()
                 .OrderBy(a => a.AttemptNumber).ToListAsync();
@@ -486,7 +477,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 envelopeJson,
                 correlationId);
 
-            // 400 is non-retryable (not 408, 429, 5xx, timeout, or transport error).
             var handler = new SequenceHandler(new HttpResponseMessage(HttpStatusCode.BadRequest));
             using var httpClientFactory = new DeterministicHttpClientFactory(handler);
             var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
@@ -504,10 +494,10 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
             Assert.True(await processor.TryProcessNextAsync(CancellationToken.None));
 
             await using var check = _database.CreateDbContext();
-            var d = await check.Deliveries.AsNoTracking().SingleAsync();
-            Assert.Equal(DeliveryState.Failed, d.State);
-            Assert.Equal(1, d.AttemptCount);
-            Assert.Equal("http_status", d.ErrorCode);
+            var delivery = await check.Deliveries.AsNoTracking().SingleAsync();
+            Assert.Equal(DeliveryState.Failed, delivery.State);
+            Assert.Equal(1, delivery.AttemptCount);
+            Assert.Equal("http_status", delivery.ErrorCode);
 
             var attempt = await check.DeliveryAttempts.AsNoTracking().SingleAsync();
             Assert.Equal(AttemptState.Failed, attempt.State);
@@ -555,21 +545,19 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 envelopeJson,
                 correlationId);
 
-            // Manually simulate a claimed delivery whose lease expired (crashed worker).
             var staleClaimToken = Guid.NewGuid();
             var staleStartedAt = TestUtcNow.AddMinutes(-1);
             var staleClaimExpires = TestUtcNow.AddSeconds(-10);
             await using (var setupDb = _database.CreateDbContext())
             {
-                var d = await setupDb.Deliveries.SingleAsync();
-                d.Claim(staleClaimToken, staleStartedAt);
+                var claimedDelivery = await setupDb.Deliveries.SingleAsync();
+                claimedDelivery.Claim(staleClaimToken, staleStartedAt);
                 setupDb.DeliveryAttempts.Add(new DeliveryAttempt(
                     Guid.NewGuid(),
-                    d.Id,
-                    d.AttemptCount,
+                    claimedDelivery.Id,
+                    claimedDelivery.AttemptCount,
                     staleStartedAt));
-                // Override the claim expiry to be in the past.
-                setupDb.Entry(d).Property("ClaimExpiresAtUtc").CurrentValue = staleClaimExpires;
+                setupDb.Entry(claimedDelivery).Property("ClaimExpiresAtUtc").CurrentValue = staleClaimExpires;
                 await setupDb.SaveChangesAsync();
             }
 
@@ -577,7 +565,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
             using var httpClientFactory = new DeterministicHttpClientFactory(handler);
             var targetPolicy = new DemoWebhookTargetPolicy(receiverOrigin);
 
-            // Run recovery and reprocessing.
             var recoveryTime = new FixedTimeProvider(TestUtcNow);
             await using var recoveryDatabase = _database.CreateDbContext();
             var recoveryProcessor = new DeliveryProcessor(
@@ -588,14 +575,10 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 recoveryTime,
                 NullLogger<DeliveryProcessor>.Instance);
 
-            // The first call should recover the stale claim (returns true).
             Assert.True(await recoveryProcessor.TryProcessNextAsync(CancellationToken.None));
 
             await using var verifyDb = _database.CreateDbContext();
             var delivery = await verifyDb.Deliveries.AsNoTracking().SingleAsync();
-            // After recovery, the original attempt is marked failed with claim_expired.
-            // The delivery is retried (or failed if exhausted). Since this is attempt 1
-            // and we have 4 max, it should be RetryScheduled.
             Assert.Equal(DeliveryState.RetryScheduled, delivery.State);
             Assert.Equal(1, delivery.AttemptCount);
 
@@ -753,7 +736,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 envelopeJson,
                 correlationId);
 
-            // First, claim and fail the delivery so it schedules a retry.
             var handler = new SequenceHandler(
                 new(HttpStatusCode.ServiceUnavailable),
                 new(HttpStatusCode.NoContent));
@@ -771,15 +753,13 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 NullLogger<DeliveryProcessor>.Instance);
             Assert.True(await firstProcessor.TryProcessNextAsync(CancellationToken.None));
 
-            // Delivery is RetryScheduled with NextAttemptAtUtc = TestUtcNow + 1s.
             await using (var check = _database.CreateDbContext())
             {
-                var d = await check.Deliveries.AsNoTracking().SingleAsync();
-                Assert.Equal(DeliveryState.RetryScheduled, d.State);
-                Assert.NotNull(d.NextAttemptAtUtc);
+                var scheduledDelivery = await check.Deliveries.AsNoTracking().SingleAsync();
+                Assert.Equal(DeliveryState.RetryScheduled, scheduledDelivery.State);
+                Assert.NotNull(scheduledDelivery.NextAttemptAtUtc);
             }
 
-            // Try to process before the retry is due — should find nothing.
             var earlyTime = new FixedTimeProvider(TestUtcNow.AddMilliseconds(500));
             await using var earlyDatabase = _database.CreateDbContext();
             var earlyProcessor = new DeliveryProcessor(
@@ -791,7 +771,6 @@ public sealed class WorkerIntegrationTests : IAsyncLifetime
                 NullLogger<DeliveryProcessor>.Instance);
             Assert.False(await earlyProcessor.TryProcessNextAsync(CancellationToken.None));
 
-            // Now advance past the due time and the retry should be claimed.
             var dueTime = new FixedTimeProvider(TestUtcNow.AddSeconds(2));
             await using var dueDatabase = _database.CreateDbContext();
             var dueProcessor = new DeliveryProcessor(

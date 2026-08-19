@@ -15,11 +15,7 @@
 - Reversible endpoint disable/reactivate controls that stop new intake while queued deliveries continue.
 - xUnit unit tests, Testcontainers integration tests, Vitest, and Playwright workflows for success, retry, and replay.
 - Browser coverage for event validation, in-flight loading, server errors, and recovery.
-
-## Next candidates
-
-- Dashboard dark mode.
-- Additional browser coverage for concurrent idempotency scenarios.
+- Safe dashboard event retries that reuse one idempotency key after an uncertain response.
 
 ## Not planned
 
