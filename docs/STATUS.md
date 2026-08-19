@@ -13,6 +13,7 @@
 | Manual replay | ✓ | Idempotent, new envelope and correlation, lineage tracking |
 | Delivery filtering | ✓ | Exact state, endpoint, and event-type filters; combined server-side |
 | Delivery pagination | ✓ | Stable keyset cursor; filter binding; dashboard continuation and retry |
+| Delivery retention | ✓ | Configurable 30-day default; bounded event-group cleanup; active-work preservation |
 | Receiver simulator | ✓ | success, retryThenSucceed, failUntilReplay, alwaysFail |
 | Dashboard | ✓ | Endpoint lifecycle, live polling, filtering, pagination, replay UI, accessible, responsive |
 
@@ -21,7 +22,7 @@
 | Suite | Tests | Tooling |
 |-------|-------|---------|
 | .NET unit | 27 | xUnit |
-| .NET integration | 33 | Testcontainers + PostgreSQL 18 |
+| .NET integration | 35 | Testcontainers + PostgreSQL 18 |
 | Frontend unit | 13 | Vitest |
 | E2E | 3 workflows: lifecycle/success/filtering/pagination, retry, replay | Playwright + Chromium |
 
@@ -41,7 +42,7 @@
 ## Verified locally
 
 - .NET Release build: 0 warnings, 0 errors.
-- xUnit: 27 unit tests and 33 PostgreSQL integration tests passed.
+- xUnit: 27 unit tests and 35 PostgreSQL integration tests passed.
 - Frontend: ESLint, TypeScript, 13 Vitest tests, and the Next.js production build passed.
 - Docker Compose: npm 11.16 clean install and all images built; migration exited 0; API, worker, receiver, PostgreSQL, and dashboard became healthy.
 - Playwright: 3 Chromium workflows passed, including endpoint disable/reactivate, combined delivery filtering, cursor pagination with continuation retry, retry scheduling, and replay.

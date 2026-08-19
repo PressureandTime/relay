@@ -105,3 +105,13 @@ Status: accepted
 This is forward keyset traversal, not a database snapshot. Deliveries created after the first page appear after Refresh rather than in an older continuation page. State changes can move records into or out of a filtered result between requests; Refresh reconciles the list. Apply, Reset, manual Refresh, and terminal polling replace the dashboard with page one. Load more appends in server order, removes duplicate IDs defensively, and retains the existing list and cursor when a continuation request fails.
 
 No database index is added for this local bounded dataset. An index should follow measured query evidence rather than an unsupported performance claim.
+
+## 016 — Event-group delivery retention
+
+Status: accepted
+
+The worker removes completed webhook event groups after a configurable retention period. The default is 30 days, cleanup runs at most once per hour, and one pass removes at most 100 event groups. The age threshold is strict: a delivery completed exactly at the cutoff remains until a later pass.
+
+An event is eligible only when it has at least one delivery and every delivery in the group is `Succeeded` or `Failed` with `CompletedAtUtc` before the cutoff. Originals and replays therefore remain together. Queued, processing, retry-scheduled, recently completed, and incomplete deliveries preserve the whole event group. Deleting the event uses the existing database cascades to remove its deliveries and attempts; the endpoint remains.
+
+Retention also removes the event's idempotency record and payload. Reusing the same endpoint and idempotency key after expiry creates a new event, which is the expected boundary once the original record no longer exists. The worker logs only passes that remove data. No new table, index, migration, hosted service, or external scheduler is introduced.

@@ -11,12 +11,12 @@
 - Operations dashboard with live polling and replay controls.
 - Server-side delivery-history filtering by state, endpoint, and event type.
 - Stable cursor-based delivery-history pagination with dashboard continuation.
+- Configurable delivery retention with bounded event-group cleanup.
 - Reversible endpoint disable/reactivate controls that stop new intake while queued deliveries continue.
 - xUnit unit tests, Testcontainers integration tests, Vitest, and Playwright workflows for success, retry, and replay.
 
 ## Next candidates
 
-- Delivery retention policy and scheduled cleanup.
 - Dashboard dark mode.
 - Additional browser coverage for validation and concurrent idempotency scenarios.
 

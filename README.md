@@ -12,7 +12,7 @@ flowchart LR
     Dashboard -->|proxy| API["ASP.NET Core API"]
     Dashboard -->|receiver control| Receiver["Synthetic receiver"]
     API -->|events · deliveries| Postgres[(PostgreSQL)]
-    Worker[".NET worker"] -->|claim · retry · recover| Postgres
+    Worker[".NET worker"] -->|claim · retry · recover · expire| Postgres
     Worker -->|HMAC-signed POST| Receiver
     Receiver -->|configurable response| Worker
 ```
@@ -28,6 +28,7 @@ Only the dashboard is published to the host at `127.0.0.1:3000`. The API, worker
 5. On a retryable failure (HTTP 408, 429, 5xx, timeout, transport error), the worker schedules the next attempt with exponential backoff: 1 s, 2 s, 4 s — up to four total attempts.
 6. On a non-retryable failure or after exhausting attempts, the delivery is terminal.
 7. A failed delivery can be replayed manually. The replay creates a new delivery with a fresh envelope, hash, and correlation ID while preserving the event and payload.
+8. Once every delivery for an event has been terminal for the retention period, the worker removes the event, its deliveries, and their attempts together.
 
 ## Signing contract
 
@@ -77,6 +78,12 @@ npm run test:e2e
 
 Integration tests start disposable PostgreSQL containers through Testcontainers. Three Playwright tests cover immediate success with endpoint lifecycle, filtering, and history pagination; retry-then-success; and failed-delivery replay through the dashboard.
 
+## Retention
+
+The worker checks for expired event groups once per hour and removes at most 100 per pass. The default retention period is 30 days. A group is kept if any original or replay delivery is queued, processing, retry-scheduled, incomplete, or newer than the cutoff.
+
+The settings are under `Relay:DeliveryRetention`. Compose overrides use `Relay__DeliveryRetention__Enabled`, `Relay__DeliveryRetention__RetainFor`, and `Relay__DeliveryRetention__CleanupInterval`; durations use the .NET `TimeSpan` format. Retention removes the event payload and idempotency record along with its delivery history. Endpoints are not removed.
+
 ## Security boundary
 
 - Endpoint URLs must match the configured receiver origin and `/webhooks/{UUID}` path.
@@ -87,7 +94,6 @@ Integration tests start disposable PostgreSQL containers through Testcontainers.
 ## Limitations
 
 - Receiver state is in-memory and resets when the container restarts.
-- No delivery retention policy.
 - No arbitrary webhook destinations, authentication, multitenancy, billing, or cloud deployment.
 
 ## Repository layout
@@ -98,7 +104,7 @@ Integration tests start disposable PostgreSQL containers through Testcontainers.
 | `src/Relay.Api` | Event, endpoint, delivery, and replay HTTP API |
 | `src/Relay.Core` | Domain entities, state machine, retry policy, signing |
 | `src/Relay.Infrastructure` | EF Core persistence and migrations |
-| `src/Relay.Worker` | Claim loop, delivery, retry scheduling, stale-claim recovery |
+| `src/Relay.Worker` | Claim loop, delivery, retry scheduling, stale-claim recovery, retention cleanup |
 | `tools/Relay.ReceiverSimulator` | Configurable synthetic receiver |
 | `tests/Relay.UnitTests` | Domain and signing unit tests |
 | `tests/Relay.IntegrationTests` | API, worker, receiver, and PostgreSQL tests |

@@ -1,18 +1,41 @@
+using Microsoft.Extensions.Options;
+
 namespace Relay.Worker;
 
 public sealed partial class DeliveryWorker(
     IServiceScopeFactory scopeFactory,
+    TimeProvider timeProvider,
+    IOptions<DeliveryRetentionOptions> retentionOptions,
     ILogger<DeliveryWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         LogReady(logger);
+        var retention = retentionOptions.Value;
+        DateTimeOffset? nextCleanupAtUtc = null;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 await using var scope = scopeFactory.CreateAsyncScope();
+                var now = timeProvider.GetUtcNow();
+                if (retention.Enabled
+                    && (nextCleanupAtUtc is null || now >= nextCleanupAtUtc))
+                {
+                    nextCleanupAtUtc = now + retention.CleanupInterval;
+                    var cleaner = scope.ServiceProvider
+                        .GetRequiredService<DeliveryRetentionCleaner>();
+                    var cutoffUtc = now - retention.RetainFor;
+                    var deletedEventCount = await cleaner.CleanupAsync(
+                        cutoffUtc,
+                        stoppingToken);
+                    if (deletedEventCount > 0)
+                    {
+                        LogRetentionCleanup(logger, deletedEventCount, cutoffUtc);
+                    }
+                }
+
                 var processor = scope.ServiceProvider.GetRequiredService<DeliveryProcessor>();
                 if (!await processor.TryProcessNextAsync(stoppingToken))
                 {
@@ -39,4 +62,13 @@ public sealed partial class DeliveryWorker(
         Level = LogLevel.Error,
         Message = "Unexpected delivery worker failure")]
     private static partial void LogProcessingFailure(ILogger logger, Exception exception);
+
+    [LoggerMessage(
+        EventId = 1002,
+        Level = LogLevel.Information,
+        Message = "Removed {EventCount} expired webhook event groups completed before {CutoffUtc}")]
+    private static partial void LogRetentionCleanup(
+        ILogger logger,
+        int eventCount,
+        DateTimeOffset cutoffUtc);
 }

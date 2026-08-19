@@ -15,7 +15,7 @@ builder.Logging.AddJsonConsole(options =>
 builder.Services.AddRelayPersistence(builder.Configuration);
 builder.Services.AddRelayDataProtection(builder.Configuration);
 builder.Services.AddRelayTargetPolicy(builder.Configuration);
-builder.Services.AddRelayDeliveryWorker();
+builder.Services.AddRelayDeliveryWorker(builder.Configuration);
 builder.Services.AddHealthChecks()
     .AddDbContextCheck<RelayDbContext>("postgres", tags: ["ready"]);
 
