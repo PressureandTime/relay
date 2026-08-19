@@ -14,11 +14,12 @@
 - Configurable delivery retention with bounded event-group cleanup.
 - Reversible endpoint disable/reactivate controls that stop new intake while queued deliveries continue.
 - xUnit unit tests, Testcontainers integration tests, Vitest, and Playwright workflows for success, retry, and replay.
+- Browser coverage for event validation, in-flight loading, server errors, and recovery.
 
 ## Next candidates
 
 - Dashboard dark mode.
-- Additional browser coverage for validation and concurrent idempotency scenarios.
+- Additional browser coverage for concurrent idempotency scenarios.
 
 ## Not planned
 

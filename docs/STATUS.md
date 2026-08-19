@@ -24,7 +24,7 @@
 | .NET unit | 27 | xUnit |
 | .NET integration | 35 | Testcontainers + PostgreSQL 18 |
 | Frontend unit | 13 | Vitest |
-| E2E | 3 workflows: lifecycle/success/filtering/pagination, retry, replay | Playwright + Chromium |
+| E2E | 4 workflows: lifecycle/success/filtering/pagination, retry, replay, validation/error recovery | Playwright + Chromium |
 
 ## Known issues
 
@@ -45,4 +45,4 @@
 - xUnit: 27 unit tests and 35 PostgreSQL integration tests passed.
 - Frontend: ESLint, TypeScript, 13 Vitest tests, and the Next.js production build passed.
 - Docker Compose: npm 11.16 clean install and all images built; migration exited 0; API, worker, receiver, PostgreSQL, and dashboard became healthy.
-- Playwright: 3 Chromium workflows passed, including endpoint disable/reactivate, combined delivery filtering, cursor pagination with continuation retry, retry scheduling, and replay.
+- Playwright: 4 Chromium workflows passed, including endpoint disable/reactivate, combined delivery filtering, cursor pagination with continuation retry, retry scheduling, replay, and event validation/error recovery.
