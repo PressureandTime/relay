@@ -4,6 +4,8 @@ Relay is a webhook delivery service that accepts events, signs outbound requests
 
 The system runs locally through Docker Compose: an ASP.NET Core API, a .NET background worker, a synthetic receiver, PostgreSQL, and the dashboard.
 
+[Read the portfolio case study](https://www.petar.rocks/work/relay/)
+
 ## Architecture
 
 ```mermaid
