@@ -27,7 +27,7 @@ Only the dashboard is published to the host at `127.0.0.1:3000`. The API, worker
 2. Submit an event with a JSON payload and idempotency key. If the dashboard receives an uncertain failure, retrying the unchanged form reuses the key and recovers the original result.
 3. The API creates the event and a queued delivery in one transaction.
 4. The worker claims the delivery, signs the envelope, and sends an HTTP POST.
-5. On a retryable failure (HTTP 408, 429, 5xx, timeout, transport error), the worker schedules the next attempt with exponential backoff: 1 s, 2 s, 4 s — up to four total attempts.
+5. On a retryable failure (HTTP 408, 429, 5xx, timeout, transport error), the worker schedules the next attempt with exponential backoff of 1 s, 2 s and 4 s, up to four total attempts.
 6. On a non-retryable failure or after exhausting attempts, the delivery is terminal.
 7. A failed delivery can be replayed manually. The replay creates a new delivery with a fresh envelope, hash, and correlation ID while preserving the event and payload.
 8. Once every delivery for an event has been terminal for the retention period, the worker removes the event, its deliveries, and their attempts together.
